@@ -1,5 +1,9 @@
 # TPP Analysis App
 
+<p align="center">
+  <img src="logo.svg" alt="Lab Logo" width="200"/>
+</p>
+
 This hosted Streamlit application performs Thermal Proteome Profiling (TPP) analysis on protein data.
 
 ## Description
