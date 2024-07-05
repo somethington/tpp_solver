@@ -81,9 +81,13 @@ Note: There are no specific naming requirements for the metadata CSV file itself
 Explanation of the metadata file columns:
 
 1. **filename**: This should be the name of the experimental output file, such as mzML
-2. **Temperature**: The temperature at which the sample was measured (in °C).
-3. **Treatment**: The treatment condition (e.g., 'control' or 'ADP').
+2. **Temperature**: The temperature with which the sample was treated (in °C).
+3. **Treatment**: The treatment condition (e.g., 'control' or 'ADP' in the example).
 4. **Samples**: The unique identifier for each sample, such as C_1_1 or T_3_2 in the example
+
+**Important: Entries with the same Temperature and Treatment are treated as replicates.** 
+
+For example, in the table above, C_1_1 and C_2_1 are replicates because they have the same Temperature (45.4) and Treatment (control).
 
 Each row represents a unique combination of temperature, treatment, and sample. The 'Intensity' in the Samples column refers to the measurement type in your raw data file.
 
@@ -96,6 +100,6 @@ Ensure your metadata CSV file follows this format for the application to process
 
 ## Contact
 
-[Lukas Dolidze] - [ldoli002@ucr.edu]
+Lukas Dolidze - <a href="mailto:ldoli002@ucr.edu?subject=TPP%20Curve%20Fitting%20App">ldoli002@ucr.edu</a>
 
 App URL: [insert hosted app URL here]
