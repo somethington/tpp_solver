@@ -31,18 +31,21 @@ The TPP Analysis App processes raw data from TSV files and metadata from CSV fil
 
 ### Metadata CSV File
 
-The metadata CSV file should follow this template:
+The metadata CSV file should follow this format:
 
-**filename**
-**Temperature**,**Treatment**,**Samples**
-45.4,control,C_1_1 Intensity
-45.4,control,C_2_1 Intensity
-49.1,control,C_1_2 Intensity
-...
-80.1,ADP,T_2_8 Intensity
-80.1,ADP,T_3_8 Intensity
+| filename    | Temperature | Treatment | Samples         |
+|-------------|-------------|-----------|-----------------|
+| C_1_1.mzML  | 45.4        | control   | C_1_1 Intensity |
+| C_2_1.mzML  | 45.4        | control   | C_2_1 Intensity |
+| C_1_2.mzML  | 49.1        | control   | C_1_2 Intensity |
+| C_2_2.mzML  | 49.1        | control   | C_2_2 Intensity |
+| ...         | ...         | ...       | ...             |
+| T_2_8.mzML  | 80.1        | ADP       | T_2_8 Intensity |
+| T_3_8.mzML  | 80.1        | ADP       | T_3_8 Intensity |
 
-Explanation of the metadata file:
+Note: There are no specific naming requirements for the metadata CSV file itself. You can name it as you prefer, as long as it's a valid CSV file.
+
+Explanation of the metadata file columns:
 
 1. **filename**: This should be the name of the experimental output file, such as mzML
 2. **Temperature**: The temperature at which the sample was measured (in °C).
