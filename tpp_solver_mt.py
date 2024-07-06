@@ -31,6 +31,24 @@ def sigmoid(T, a, b, plateau):
 def paper_sigmoidal(T, A1, A2, Tm):
     return A2 + (A1 - A2) / (1 + np.exp((T - Tm)))
 
+# Data extraction and processing functions
+
+# Extract sample information from CSV
+def extract_samples(csv_data):
+    if "Samples" not in csv_data.columns:
+        raise ValueError("The CSV file does not contain a 'Samples' column")
+    if "Temperature" not in csv_data.columns:
+        raise ValueError("The CSV file does not contain a 'Temperature' column")
+    if "Treatment" not in csv_data.columns:
+        raise ValueError("The CSV file does not contain a 'Treatment' column")
+
+    return {
+        "Temperature": [x for x in csv_data["Temperature"].tolist() if str(x) != 'nan'],
+        "Treatment": [x for x in csv_data["Treatment"].tolist() if str(x) != 'nan'],
+        "Samples": [x for x in csv_data["Samples"].tolist() if str(x) != 'nan'],
+    }
+
+
 def main():
     # Set up Streamlit interface
     st.title("TPP Analysis App")
