@@ -120,6 +120,27 @@ def get_replicant_lists(csv_data):
 
     return sample_groups
 
+# Calculate average values for each group
+def average_samples(sample_groups, filtered_data):
+    averaged_data = {}
+    for treatment in sample_groups:
+
+        if treatment not in averaged_data:
+            averaged_data[treatment] = {}
+
+        for sample in sample_groups[treatment]:
+            for _, row in filtered_data.iterrows():
+                protein_id = row['Protein ID']
+
+                sample_vals = row[sample[1]]
+                average_val = np.mean(sample_vals)
+
+                if protein_id not in averaged_data[treatment]:
+                    averaged_data[treatment][protein_id] = {}
+
+                averaged_data[treatment][protein_id][sample[0]] = (average_val)
+    return averaged_data
+
 def main():
     # Set up Streamlit interface
     st.title("TPP Analysis App")
@@ -157,7 +178,7 @@ def main():
 
             filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
             sample_groups = get_replicant_lists(csv_data)
-            
+            average_dict = average_samples(sample_groups, filtered_data_imputed)
 
 
 
