@@ -110,6 +110,15 @@ def main():
         with col2:
             stop_btn = st.button("Stop Analysis")
 
+        if cont_btn:    
+            # Generate and display results
+            filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data,metadata['Samples'],max_allowed_zeros)
+
+            st.subheader("Analysis Result")
+            st.write(f"Number of rows after filtering: {len(filtered_data)}")
+            st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
+            st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+
 
 
 
