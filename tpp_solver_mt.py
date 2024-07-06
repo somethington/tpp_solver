@@ -48,6 +48,28 @@ def extract_samples(csv_data):
         "Samples": [x for x in csv_data["Samples"].tolist() if str(x) != 'nan'],
     }
 
+# Filter data and find lowest non-zero float in samples
+def filter_and_lowest_float(tsv_data, samples, max_zeroes_allowed):
+    missing_cols = set(samples) - set(tsv_data.columns)
+    if missing_cols:
+        raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV")
+    
+    selected_data = tsv_data[samples]
+    num_data = selected_data.apply(pd.to_numeric, errors='coerce')
+
+    zero_counts = (num_data == 0).sum(axis=1)
+    filtered_data = tsv_data[zero_counts < max_zeroes_allowed]
+
+    num_filtered_data = filtered_data[samples].apply(pd.to_numeric, errors='coerce')
+    num_filtered_data = num_filtered_data.replace(0, np.nan)
+
+    lowest_val = num_filtered_data.min().min()
+
+    if pd.isna(lowest_val):
+        raise ValueError("No valid number found")
+    
+    return filtered_data, lowest_val
+
 # Count rows with too many zeros
 def count_invalid_rows(tsv_data, samples, max_zeros_allowed):
     missing_cols = set(samples) - set(tsv_data.columns)
