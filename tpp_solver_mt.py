@@ -103,6 +103,23 @@ def impute_filtered_data(filtered_data, samples, lowest_float):
 
     return filtered_data
 
+# Group samples by treatment and temperature
+def get_replicant_lists(csv_data):
+    if not all(col in csv_data.columns for col in ['Samples', 'Temperature', 'Treatment']):
+        raise ValueError("Does not contain appropriate columns")
+    
+    csv_data['Temperature'] = pd.to_numeric(csv_data['Temperature'], errors='coerce')
+    csv_data_sorted = csv_data.sort_values(['Treatment', 'Temperature'])
+
+    grouped = csv_data_sorted.groupby(['Treatment', 'Temperature'])
+    sample_groups = {}
+    for (treatment, temp), group in grouped:
+        if treatment not in sample_groups:
+            sample_groups[treatment] = []
+        sample_groups[treatment].append((temp, group['Samples'].tolist()))
+
+    return sample_groups
+
 def main():
     # Set up Streamlit interface
     st.title("TPP Analysis App")
@@ -139,6 +156,8 @@ def main():
             st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
 
             filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
+            sample_groups = get_replicant_lists(csv_data)
+            
 
 
 
