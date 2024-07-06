@@ -80,8 +80,13 @@ def main():
         metadata = extract_samples(csv_data)
         
         droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
-        st.subheader("Rows that would be dropped under current conditions")
-        st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows}")
+        st.subheader(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Dropped)")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            cont_btn = st.button("Continue Analysis")
+        with col2:
+            stop_btn = st.button("Stop Analysis")
 
 
 
