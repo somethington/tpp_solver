@@ -84,6 +84,25 @@ def count_invalid_rows(tsv_data, samples, max_zeros_allowed):
 
     return excess_zero_rows
 
+# Impute missing data with random values
+def impute_filtered_data(filtered_data, samples, lowest_float):
+    data_to_process = filtered_data[samples].copy()
+
+    for col in samples:
+        num_col = pd.to_numeric(data_to_process[col], errors='coerce')
+        zero_mask = num_col == 0
+        zero_count = zero_mask.count()
+
+        if zero_count > 0:
+            rand_vals = np.random.uniform(0, lowest_float, size=zero_count)
+            num_col[zero_mask] = rand_vals
+        
+        data_to_process[col] = num_col
+
+    filtered_data[samples] = data_to_process
+
+    return filtered_data
+
 def main():
     # Set up Streamlit interface
     st.title("TPP Analysis App")
@@ -118,6 +137,8 @@ def main():
             st.write(f"Number of rows after filtering: {len(filtered_data)}")
             st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
             st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+
+            filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
 
 
 
