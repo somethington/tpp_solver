@@ -48,6 +48,19 @@ def extract_samples(csv_data):
         "Samples": [x for x in csv_data["Samples"].tolist() if str(x) != 'nan'],
     }
 
+# Count rows with too many zeros
+def count_invalid_rows(tsv_data, samples, max_zeros_allowed):
+    missing_cols = set(samples) - set(tsv_data.columns)
+    if missing_cols:
+        raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV")
+    
+    selected_data = tsv_data[samples]
+    num_data = selected_data.apply(pd.to_numeric, errors='coerce')
+
+    zero_counts = (num_data == 0).sum(axis=1)
+    excess_zero_rows = (zero_counts >= max_zeros_allowed).sum()
+
+    return excess_zero_rows
 
 def main():
     # Set up Streamlit interface
@@ -64,6 +77,14 @@ def main():
         # Process data
         tsv_data = read_tsv_file(tsv_file)
         csv_data = read_csv_file(csv_file)
+        metadata = extract_samples(csv_data)
+        
+        droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
+        st.subheader("Rows that would be dropped under current conditions")
+        st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows}")
+
+
+
 
 if __name__ == "__main__":
     main()
