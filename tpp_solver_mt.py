@@ -12,10 +12,16 @@
            (______(((_(((______(@)
            Cooked, Fried, and Prepared by Mr Gugi
 '''
+import io
+import time
+import zipfile
+import itertools
 import numpy as np
 import pandas as pd
 import streamlit as st
-
+import multiprocessing as mp
+import matplotlib.pyplot as plt
+from scipy.optimize import curve_fit
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -141,6 +147,121 @@ def average_samples(sample_groups, filtered_data):
                 averaged_data[treatment][protein_id][sample[0]] = (average_val)
     return averaged_data
 
+# Fit curve and plot data for a single protein
+def process_protein(args):
+    protein, data_dict, markers, sizes, alphas, positions = args
+    fig, ax = plt.subplots(figsize=(10,6))
+    summary_data = []
+    
+    try:
+        for treatment, proteins in data_dict.items():
+            if protein in proteins:
+                temperatures = np.array(list(proteins[protein].keys()))
+                values = np.array(list(proteins[protein].values()))
+
+                index = np.argsort(temperatures)
+                temperatures = temperatures[index]
+                values = values[index]
+
+                values = [entry / values[0] for entry in values]
+
+                valmax = max(values)
+                med = np.median(temperatures)
+                minval = min(values)
+
+                marker = next(markers)
+                size = next(sizes)
+                alpha = next(alphas)
+                curpos = next(positions)
+
+                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} Curve')
+
+                popt, _ = curve_fit(sigmoid, temperatures, values, p0=[valmax, med, minval])
+
+                melt_pt = sigmoid(popt[1], *popt)
+
+                temp_range = np.linspace(temperatures.min(), temperatures.max(), 100)
+                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} Fitted')
+
+                ax.scatter(popt[1], melt_pt, color='red', s=75, marker='^')
+                ax.text(popt[1], melt_pt, f'{popt[1]:.2f}', color='red', horizontalalignment=curpos, verticalalignment='bottom')
+
+                summary_data.append({
+                    'protein_id': protein,
+                    'treatment': treatment,
+                    'melting point': popt[1],
+                    'residuals': ','.join(map(str, (values - sigmoid(temperatures, *popt)))),
+                })
+
+        ax.set_xlabel('Temperature')                        
+        ax.set_ylabel('Intensity')
+        ax.set_title(f'Fitted Curve for {protein}')
+        ax.legend()
+        
+        return protein, fig, summary_data
+    except RuntimeError as e:
+        print(f"Error processing protein {protein}: {str(e)}")
+        return None, None, None
+    except Exception as e:
+        print(f"Unexpected error processing protein {protein}: {str(e)}")
+        return None, None, None
+
+# Fit curves and plot data for all proteins using multiprocessing
+def fit_and_plot(data_dict):
+    all_proteins = set()
+    for treatment in data_dict.values():
+        all_proteins.update(treatment.keys())
+    
+    markers = itertools.cycle(['o', 's'])
+    sizes = itertools.cycle([50, 100])
+    alphas = itertools.cycle([1.0, 0.5])
+    positions = itertools.cycle(["left", "right"])
+
+    pool = mp.Pool(processes=mp.cpu_count())
+    results = pool.map(process_protein, [(protein, data_dict, markers, sizes, alphas, positions) for protein in all_proteins])
+    pool.close()
+    pool.join()
+
+    figures = {}
+    summary_table = pd.DataFrame(columns=['protein_id', 'treatment', 'melting point', 'residuals'])
+
+    for result in results:
+        if result is not None:
+            protein, fig, summary_data = result
+            if protein is not None:
+                figures[protein] = fig
+                summary_table = pd.concat([summary_table, pd.DataFrame(summary_data)], ignore_index=True)
+
+    return figures, summary_table
+
+# Save a single figure as SVG
+def save_figure_as_svg(args):
+    protein, fig = args
+    svg_io = io.BytesIO()
+    fig.savefig(svg_io, format='svg', bbox_inches='tight')
+    svg_io.seek(0)
+    plt.close(fig)
+    return (f"{protein}.svg", svg_io.getvalue())
+
+# Save all figures as SVGs and create a zip file
+def save_as_svg(figures, dataframe):
+    pool = mp.Pool(processes=mp.cpu_count())
+    memory_files = pool.map(save_figure_as_svg, figures.items())
+    pool.close()
+    pool.join()
+
+    csv_io = io.BytesIO()
+    dataframe.to_csv(csv_io, index=False)
+    csv_io.seek(0)
+    memory_files.append(("summary.csv", csv_io.getvalue()))
+
+    zip_io = io.BytesIO()
+    with zipfile.ZipFile(zip_io, mode='w') as zip_file:
+        for file_name, file_content in memory_files:
+            zip_file.writestr(file_name, file_content)
+
+    return zip_io.getvalue()
+
 def main():
     # Set up Streamlit interface
     st.title("TPP Analysis App")
@@ -180,8 +301,33 @@ def main():
             sample_groups = get_replicant_lists(csv_data)
             average_dict = average_samples(sample_groups, filtered_data_imputed)
 
+            start_time = time.time()
+            with st.spinner("Fitting curves and generating plots..."):
+                figures, summary_table = fit_and_plot(average_dict)
+            end_time = time.time()
+            figure_generation_time = end_time - start_time
 
+            st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
 
+            start_time = time.time()
+            with st.spinner('Preparing SVG files for download...'):
+                zip_file = save_as_svg(figures, summary_table)
+            end_time = time.time()
+            figure_save_time = end_time - start_time
+
+            st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+
+            # Provide download option for results
+            st.download_button(
+                label="Download zipped svgs",
+                data=zip_file,
+                file_name="protein_curves.zip",
+                mime="application/zip"
+            )
+            plt.close('all')
+
+        elif stop_btn:
+            st.write("Analysis stopped. You can adjust the maximum number of zeros allowed and try again.")
 
 if __name__ == "__main__":
     main()
