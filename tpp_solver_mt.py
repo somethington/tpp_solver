@@ -12,6 +12,7 @@
            (______(((_(((______(@)
            Cooked, Fried, and Prepared by Mr Gugi
 '''
+import os
 import io
 import time
 import zipfile
@@ -22,6 +23,8 @@ import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
+from readme_content import display_readme
+
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -41,19 +44,38 @@ def paper_sigmoidal(T, A1, A2, Tm):
 
 # Extract sample information from CSV
 def extract_samples(csv_data):
-    if "Samples" not in csv_data.columns:
-        raise ValueError("The CSV file does not contain a 'Samples' column")
-    if "Temperature" not in csv_data.columns:
-        raise ValueError("The CSV file does not contain a 'Temperature' column")
-    if "Treatment" not in csv_data.columns:
-        raise ValueError("The CSV file does not contain a 'Treatment' column")
+    # Filter out unnamed columns
+    named_columns = [col for col in csv_data.columns if not col.startswith('Unnamed:')]
 
+    # Define the required categories
+    categories = ["Temperature", "Treatment", "Samples"]
+
+    # Create a dictionary to store the selected columns for each category
+    selected_columns = {}
+
+    for category in categories:
+        default_column = category if category in named_columns else None
+        selected_columns[category] = st.selectbox(
+            f"Select column for {category}:",
+            options=[""] + named_columns,
+            index=named_columns.index(default_column) + 1 if default_column else 0
+        )
+
+    result = {}
+    for category, column in selected_columns.items():
+        if not column:
+            st.error(f"Please select a column for {category}")
+            return None
+        if column not in csv_data.columns:
+            st.error(f"The CSV file does not contain a '{column}' column")
+            return None
+        result[category] = [x for x in csv_data[column].tolist() if str(x) != 'nan']
+    
     return {
-        "Temperature": [x for x in csv_data["Temperature"].tolist() if str(x) != 'nan'],
-        "Treatment": [x for x in csv_data["Treatment"].tolist() if str(x) != 'nan'],
-        "Samples": [x for x in csv_data["Samples"].tolist() if str(x) != 'nan'],
+        "Temperature": result.get("Temperature", []),
+        "Treatment": result.get("Treatment", []),
+        "Samples": result.get("Samples", [])
     }
-
 # Filter data and find lowest non-zero float in samples
 def filter_and_lowest_float(tsv_data, samples, max_zeroes_allowed):
     missing_cols = set(samples) - set(tsv_data.columns)
@@ -262,72 +284,86 @@ def save_as_svg(figures, dataframe):
 
     return zip_io.getvalue()
 
+# Sidebar selector
+def sidebar_navigation():
+    st.sidebar.title("Navigation")
+    
+    options = ["Main App", "README"]
+    choice = st.sidebar.radio("Go to", options)
+    
+    return choice
+
 def main():
-    # Set up Streamlit interface
-    st.title("TPP Analysis App")
+    choice = sidebar_navigation()
+    
+    if choice == "README":
+        display_readme()
+    elif choice == "Main App":
+        # Set up Streamlit interface
+        st.title("TPP Analysis App")
 
-    # Handle file uploads
-    tsv_file = st.file_uploader("Upload TSV raw data file", type=['tsv'])
-    csv_file = st.file_uploader("Upload CSV metadata file", type=['csv'])
+        # Handle file uploads
+        tsv_file = st.file_uploader("Upload TSV raw data file", type=['tsv'])
+        csv_file = st.file_uploader("Upload CSV metadata file", type=['csv'])
 
-    max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
+        max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
 
-    if tsv_file and csv_file:
+        if tsv_file and csv_file:
 
-        # Process data
-        tsv_data = read_tsv_file(tsv_file)
-        csv_data = read_csv_file(csv_file)
-        metadata = extract_samples(csv_data)
-        
-        droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
-        st.subheader(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Dropped)")
+            # Process data
+            tsv_data = read_tsv_file(tsv_file)
+            csv_data = read_csv_file(csv_file)
+            metadata = extract_samples(csv_data)
+            
+            droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
+            st.subheader(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Dropped)")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            cont_btn = st.button("Continue Analysis")
-        with col2:
-            stop_btn = st.button("Stop Analysis")
+            col1, col2 = st.columns(2)
+            with col1:
+                cont_btn = st.button("Continue Analysis")
+            with col2:
+                stop_btn = st.button("Stop Analysis")
 
-        if cont_btn:    
-            # Generate and display results
-            filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data,metadata['Samples'],max_allowed_zeros)
+            if cont_btn:    
+                # Generate and display results
+                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data,metadata['Samples'],max_allowed_zeros)
 
-            st.subheader("Analysis Result")
-            st.write(f"Number of rows after filtering: {len(filtered_data)}")
-            st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
-            st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+                st.subheader("Analysis Result")
+                st.write(f"Number of rows after filtering: {len(filtered_data)}")
+                st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
+                st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
 
-            filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
-            sample_groups = get_replicant_lists(csv_data)
-            average_dict = average_samples(sample_groups, filtered_data_imputed)
+                filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
+                sample_groups = get_replicant_lists(csv_data)
+                average_dict = average_samples(sample_groups, filtered_data_imputed)
 
-            start_time = time.time()
-            with st.spinner("Fitting curves and generating plots..."):
-                figures, summary_table = fit_and_plot(average_dict)
-            end_time = time.time()
-            figure_generation_time = end_time - start_time
+                start_time = time.time()
+                with st.spinner("Fitting curves and generating plots..."):
+                    figures, summary_table = fit_and_plot(average_dict)
+                end_time = time.time()
+                figure_generation_time = end_time - start_time
 
-            st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
+                st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
 
-            start_time = time.time()
-            with st.spinner('Preparing SVG files for download...'):
-                zip_file = save_as_svg(figures, summary_table)
-            end_time = time.time()
-            figure_save_time = end_time - start_time
+                start_time = time.time()
+                with st.spinner('Preparing SVG files for download...'):
+                    zip_file = save_as_svg(figures, summary_table)
+                end_time = time.time()
+                figure_save_time = end_time - start_time
 
-            st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+                st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
 
-            # Provide download option for results
-            st.download_button(
-                label="Download zipped svgs",
-                data=zip_file,
-                file_name="protein_curves.zip",
-                mime="application/zip"
-            )
-            plt.close('all')
+                # Provide download option for results
+                st.download_button(
+                    label="Download zipped svgs",
+                    data=zip_file,
+                    file_name="protein_curves.zip",
+                    mime="application/zip"
+                )
+                plt.close('all')
 
-        elif stop_btn:
-            st.write("Analysis stopped. You can adjust the maximum number of zeros allowed and try again.")
+            elif stop_btn:
+                st.write("Analysis stopped. You can adjust the maximum number of zeros allowed and try again.")
 
 if __name__ == "__main__":
     main()
