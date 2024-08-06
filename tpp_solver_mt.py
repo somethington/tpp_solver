@@ -1,4 +1,4 @@
-'''
+r'''
  ,`````.          _________
 ' AWAU  `,       /_  ___   \
 '        `.     /@ \/@  \   \
@@ -13,8 +13,9 @@
            Cooked, Fried, and Prepared by Mr Gugi
 '''
 import io
+import os
 import time
-import zipfile
+import zipfile 
 import itertools
 import numpy as np
 import pandas as pd
@@ -244,14 +245,25 @@ def fit_and_plot(data_dict):
     pool.join()
 
     figures = {}
-    summary_table = pd.DataFrame(columns=['protein_id', 'treatment', 'melting point', 'residuals'])
+    all_summary_data = []
 
     for result in results:
         if result is not None:
-            protein, fig, summary_data = result
-            if protein is not None:
-                figures[protein] = fig
-                summary_table = pd.concat([summary_table, pd.DataFrame(summary_data)], ignore_index=True)
+            protein, img_buf, summary_data = result
+            if protein is not None and summary_data:
+                figures[protein] = img_buf
+                all_summary_data.extend(summary_data)
+
+    # Create the summary table only if we have data
+    if all_summary_data:
+        summary_table = pd.DataFrame(all_summary_data)
+        # Ensure correct data types
+        summary_table['protein_id'] = summary_table['protein_id'].astype(str)
+        summary_table['treatment'] = summary_table['treatment'].astype(str)
+        summary_table['melting point'] = summary_table['melting point'].astype(float)
+        summary_table['residuals'] = summary_table['residuals'].astype(str)
+    else:
+        summary_table = pd.DataFrame(columns=['protein_id', 'treatment', 'melting point', 'residuals'])
 
     return figures, summary_table
 
@@ -298,34 +310,51 @@ def main():
     if choice == "README":
         display_readme()
     elif choice == "Main App":
-        # Set up Streamlit interface
         st.title("TPP Analysis App")
 
+        data_path = os.path.dirname(os.path.abspath(__file__))
+        csv_path = os.path.join(data_path, "sample_metadata.csv")
+        tsv_path = os.path.join(data_path, "sample_data.tsv")
+
+        # Use session state to store file data
+        if 'tsv_file' not in st.session_state:
+            st.session_state.tsv_file = None
+        if 'csv_file' not in st.session_state:
+            st.session_state.csv_file = None
+
         # Handle file uploads
-        tsv_file = st.file_uploader("Upload TSV raw data file", type=['tsv'])
-        csv_file = st.file_uploader("Upload CSV metadata file", type=['csv'])
+        uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
+        uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
+
+        if uploaded_tsv:
+            st.session_state.tsv_file = uploaded_tsv
+        if uploaded_csv:
+            st.session_state.csv_file = uploaded_csv
 
         max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
 
-        if tsv_file and csv_file:
+        if st.button('Load sample data'):
+            st.session_state.tsv_file = tsv_path
+            st.session_state.csv_file = csv_path
 
+        if st.session_state.tsv_file and st.session_state.csv_file:
             # Process data
-            tsv_data = read_tsv_file(tsv_file)
-            csv_data = read_csv_file(csv_file)
+            tsv_data = read_tsv_file(st.session_state.tsv_file)
+            csv_data = read_csv_file(st.session_state.csv_file)
             metadata = extract_samples(csv_data)
             
             droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
             st.subheader(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Dropped)")
-
+            
             col1, col2 = st.columns(2)
             with col1:
                 cont_btn = st.button("Continue Analysis")
             with col2:
                 stop_btn = st.button("Stop Analysis")
-
+        
             if cont_btn:    
                 # Generate and display results
-                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data,metadata['Samples'],max_allowed_zeros)
+                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
 
                 st.subheader("Analysis Result")
                 st.write(f"Number of rows after filtering: {len(filtered_data)}")
@@ -363,6 +392,5 @@ def main():
 
             elif stop_btn:
                 st.write("Analysis stopped. You can adjust the maximum number of zeros allowed and try again.")
-
 if __name__ == "__main__":
     main()
