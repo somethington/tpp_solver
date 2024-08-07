@@ -74,7 +74,6 @@ def display_readme():
     1. You have three options for data input:
        - Upload your TSV (fragpipe output) and CSV (metadata) files using the file upload widgets
        - Click "Load sample data" to use pre-loaded example data
-       - Use a combination of uploaded and sample data
     2. After loading data, you can view and edit it using the "Edit/View data" and "Edit/View metadata" buttons
     3. Adjust the "Maximum number of zeros allowed" as needed
     4. Click "Start Analysis" to process the data and generate results
