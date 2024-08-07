@@ -1,17 +1,3 @@
-r'''
- ,`````.          _________
-' AWAU  `,       /_  ___   \
-'        `.     /@ \/@  \   \
- ` , . , '  `.. \__/\___/   /
-                 \_\/______/
-                 /     /\\\\\
-                |     |\\\\\\
-                 \      \\\\\\
-                  \______/\\\\     -ccw-
-            _______ ||_||_______
-           (______(((_(((______(@)
-           Cooked, Fried, and Prepared by Mr Gugi
-'''
 import io
 import os
 import time
@@ -23,8 +9,7 @@ import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
-from readme_content import display_readme
-
+from readme_content import  display_readme
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -76,6 +61,7 @@ def extract_samples(csv_data):
         "Treatment": result.get("Treatment", []),
         "Samples": result.get("Samples", [])
     }
+
 # Filter data and find lowest non-zero float in samples
 def filter_and_lowest_float(tsv_data, samples, max_zeroes_allowed):
     missing_cols = set(samples) - set(tsv_data.columns)
@@ -119,7 +105,7 @@ def impute_filtered_data(filtered_data, samples, lowest_float):
     for col in samples:
         num_col = pd.to_numeric(data_to_process[col], errors='coerce')
         zero_mask = num_col == 0
-        zero_count = zero_mask.count()
+        zero_count = zero_mask.sum()
 
         if zero_count > 0:
             rand_vals = np.random.uniform(0, lowest_float, size=zero_count)
@@ -152,7 +138,6 @@ def get_replicant_lists(csv_data):
 def average_samples(sample_groups, filtered_data):
     averaged_data = {}
     for treatment in sample_groups:
-
         if treatment not in averaged_data:
             averaged_data[treatment] = {}
 
@@ -166,7 +151,7 @@ def average_samples(sample_groups, filtered_data):
                 if protein_id not in averaged_data[treatment]:
                     averaged_data[treatment][protein_id] = {}
 
-                averaged_data[treatment][protein_id][sample[0]] = (average_val)
+                averaged_data[treatment][protein_id][sample[0]] = average_val
     return averaged_data
 
 # Fit curve and plot data for a single protein
@@ -249,9 +234,9 @@ def fit_and_plot(data_dict):
 
     for result in results:
         if result is not None:
-            protein, img_buf, summary_data = result
+            protein, fig, summary_data = result
             if protein is not None and summary_data:
-                figures[protein] = img_buf
+                figures[protein] = fig
                 all_summary_data.extend(summary_data)
 
     # Create the summary table only if we have data
@@ -295,102 +280,176 @@ def save_as_svg(figures, dataframe):
 
     return zip_io.getvalue()
 
-# Sidebar selector
-def sidebar_navigation():
+sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
+
+def analysis():
+    st.title("TPP Analysis App")
+
+    # Initialize session state variables
+    if 'tsv_data' not in st.session_state:
+        st.session_state.tsv_data = None
+    if 'csv_data' not in st.session_state:
+        st.session_state.csv_data = None
+    if 'edit_mode_tsv' not in st.session_state:
+        st.session_state.edit_mode_tsv = False
+    if 'edit_mode_csv' not in st.session_state:
+        st.session_state.edit_mode_csv = False
+
+    # File uploaders
+    uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
+    uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
+
+    # Create a row with three columns for the buttons
+    col1, col2, col3 = st.columns(3)
+
+    # Button to load uploaded data
+    with col1:
+        if st.button('Load uploaded data'):
+            if uploaded_tsv is not None and uploaded_csv is not None:
+                st.session_state.tsv_data = read_tsv_file(uploaded_tsv)
+                st.session_state.csv_data = read_csv_file(uploaded_csv)
+                st.success("Uploaded data loaded successfully!")
+            else:
+                st.warning("Please upload both TSV and CSV files before loading.")
+
+    # Button to load sample data
+    with col2:
+        if st.button('Load sample data', help=sample_help):
+            data_path = os.path.dirname(os.path.abspath(__file__))
+            tsv_path = os.path.join(data_path, "sample_data.tsv")
+            csv_path = os.path.join(data_path, "sample_metadata.csv")
+            st.session_state.tsv_data = read_tsv_file(tsv_path)
+            st.session_state.csv_data = read_csv_file(csv_path)
+            st.success("Sample data loaded successfully!")
+
+    # Button to clear loaded data
+    with col3:
+        if st.button('Clear loaded data'):
+            st.session_state.tsv_data = None
+            st.session_state.csv_data = None
+            st.session_state.edit_mode_tsv = False
+            st.session_state.edit_mode_csv = False
+            st.success("All loaded data has been cleared!")
+
+    # Display data status
+    if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
+        st.info("TSV and CSV data are loaded and ready for analysis.")
+    else:
+        st.warning("Please load both TSV and CSV data to proceed with analysis.")
+
+    # Display and edit TSV data
+    if st.session_state.tsv_data is not None:
+        with st.expander("TSV Data", expanded=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.subheader("TSV Data")
+            with col2:
+                edit_button = st.button("Toggle Edit Mode (TSV)")
+            
+            if edit_button:
+                st.session_state.edit_mode_tsv = not st.session_state.edit_mode_tsv
+
+            if st.session_state.edit_mode_tsv:
+                edited_tsv = st.data_editor(st.session_state.tsv_data, num_rows="dynamic")
+                if st.button("Save TSV Changes"):
+                    st.session_state.tsv_data = edited_tsv
+                    st.success("TSV data changes saved!")
+            else:
+                st.dataframe(st.session_state.tsv_data)
+
+    # Display and edit CSV data
+    if st.session_state.csv_data is not None:
+        with st.expander("CSV Metadata", expanded=True):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.subheader("CSV Metadata")
+            with col2:
+                edit_button = st.button("Toggle Edit Mode (CSV)")
+            
+            if edit_button:
+                st.session_state.edit_mode_csv = not st.session_state.edit_mode_csv
+
+            if st.session_state.edit_mode_csv:
+                edited_csv = st.data_editor(st.session_state.csv_data, num_rows="dynamic")
+                if st.button("Save CSV Changes"):
+                    st.session_state.csv_data = edited_csv
+                    st.success("CSV metadata changes saved!")
+            else:
+                st.dataframe(st.session_state.csv_data)
+
+    if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
+            st.subheader("Analysis Setup")
+
+            # Extract sample information from CSV
+            metadata = extract_samples(st.session_state.csv_data)
+
+            if metadata is None:
+                st.error("Failed to extract samples from metadata. Please check your CSV file.")
+            else:
+                # Set maximum number of zeros allowed
+                max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
+
+                # Count rows to be dropped
+                droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
+                st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
+
+                # Start Analysis button
+                if st.button("Start Analysis"):
+                    # Process data
+                    tsv_data = st.session_state.tsv_data
+                    csv_data = st.session_state.csv_data
+
+                    # Generate and display results
+                    filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
+
+                    st.subheader("Analysis Results")
+                    st.write(f"Number of rows after filtering: {len(filtered_data)}")
+                    st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
+                    st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+
+                    filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
+                    sample_groups = get_replicant_lists(csv_data)
+                    average_dict = average_samples(sample_groups, filtered_data_imputed)
+
+                    start_time = time.time()
+                    with st.spinner("Fitting curves and generating plots..."):
+                        figures, summary_table = fit_and_plot(average_dict)
+                    end_time = time.time()
+                    figure_generation_time = end_time - start_time
+
+                    st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
+
+                    start_time = time.time()
+                    with st.spinner('Preparing SVG files for download...'):
+                        zip_file = save_as_svg(figures, summary_table)
+                    end_time = time.time()
+                    figure_save_time = end_time - start_time
+
+                    st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+
+                    # Provide download option for results
+                    st.download_button(
+                        label="Download zipped SVGs",
+                        data=zip_file,
+                        file_name="protein_curves.zip",
+                        mime="application/zip"
+                    )
+
+                    # Display summary table
+                    st.subheader("Summary Table")
+                    st.dataframe(summary_table)
+
+                    plt.close('all')
+def main():
     st.sidebar.title("Navigation")
     
-    options = ["Main App", "README"]
-    choice = st.sidebar.radio("Go to", options)
-    
-    return choice
+    # Sidebar navigation
+    page = st.sidebar.radio("Go to", ["Main App", "README"])
 
-def main():
-    choice = sidebar_navigation()
-    
-    if choice == "README":
+    if page == "README":
         display_readme()
-    elif choice == "Main App":
-        st.title("TPP Analysis App")
+    elif page == "Main App":
+        analysis()
 
-        data_path = os.path.dirname(os.path.abspath(__file__))
-        csv_path = os.path.join(data_path, "sample_metadata.csv")
-        tsv_path = os.path.join(data_path, "sample_data.tsv")
-
-        # Use session state to store file data
-        if 'tsv_file' not in st.session_state:
-            st.session_state.tsv_file = None
-        if 'csv_file' not in st.session_state:
-            st.session_state.csv_file = None
-
-        # Handle file uploads
-        uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
-        uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
-
-        if uploaded_tsv:
-            st.session_state.tsv_file = uploaded_tsv
-        if uploaded_csv:
-            st.session_state.csv_file = uploaded_csv
-
-        max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
-
-        if st.button('Load sample data'):
-            st.session_state.tsv_file = tsv_path
-            st.session_state.csv_file = csv_path
-
-        if st.session_state.tsv_file and st.session_state.csv_file:
-            # Process data
-            tsv_data = read_tsv_file(st.session_state.tsv_file)
-            csv_data = read_csv_file(st.session_state.csv_file)
-            metadata = extract_samples(csv_data)
-            
-            droppable_rows = count_invalid_rows(tsv_data, metadata["Samples"], max_allowed_zeros)
-            st.subheader(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Dropped)")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                cont_btn = st.button("Continue Analysis")
-            with col2:
-                stop_btn = st.button("Stop Analysis")
-        
-            if cont_btn:    
-                # Generate and display results
-                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
-
-                st.subheader("Analysis Result")
-                st.write(f"Number of rows after filtering: {len(filtered_data)}")
-                st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
-                st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
-
-                filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
-                sample_groups = get_replicant_lists(csv_data)
-                average_dict = average_samples(sample_groups, filtered_data_imputed)
-
-                start_time = time.time()
-                with st.spinner("Fitting curves and generating plots..."):
-                    figures, summary_table = fit_and_plot(average_dict)
-                end_time = time.time()
-                figure_generation_time = end_time - start_time
-
-                st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
-
-                start_time = time.time()
-                with st.spinner('Preparing SVG files for download...'):
-                    zip_file = save_as_svg(figures, summary_table)
-                end_time = time.time()
-                figure_save_time = end_time - start_time
-
-                st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
-
-                # Provide download option for results
-                st.download_button(
-                    label="Download zipped svgs",
-                    data=zip_file,
-                    file_name="protein_curves.zip",
-                    mime="application/zip"
-                )
-                plt.close('all')
-
-            elif stop_btn:
-                st.write("Analysis stopped. You can adjust the maximum number of zeros allowed and try again.")
 if __name__ == "__main__":
     main()

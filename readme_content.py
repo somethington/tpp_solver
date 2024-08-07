@@ -1,5 +1,3 @@
-# readme_content.py
-
 import streamlit as st
 
 def display_readme():
@@ -54,13 +52,15 @@ def display_readme():
     st.header("Description")
 
     st.write("""
-    The TPP Analysis App processes raw data from TSV files and metadata from CSV files to analyze protein thermal stability. It performs curve fitting, generates plots for each protein, and provides downloadable results.
+    The TPP Analysis App processes intensities from fragpipe output and metadata from CSV files to analyze protein thermal stability. It performs curve fitting, generates plots for each protein, and provides downloadable results.
     """)
 
     st.header("Features")
 
     st.write("""
-    - Upload and process TSV (raw data) and CSV (metadata) files
+    - Upload and process TSV (fragpipe output) and CSV (metadata) files
+    - Load sample data for quick testing and demonstration
+    - View and edit uploaded data directly in the app
     - Filter data based on a user-defined maximum number of allowed zero values
     - Impute missing data
     - Perform curve fitting using a sigmoid function
@@ -71,11 +71,41 @@ def display_readme():
     st.header("Usage")
 
     st.write("""
-    1. Access the TPP Analysis App at [insert hosted app URL here]
-    2. Upload your TSV (raw data) and CSV (metadata) files using the file upload widgets
+    1. You have three options for data input:
+       - Upload your TSV (fragpipe output) and CSV (metadata) files using the file upload widgets
+       - Click "Load sample data" to use pre-loaded example data
+       - Use a combination of uploaded and sample data
+    2. After loading data, you can view and edit it using the "Edit/View data" and "Edit/View metadata" buttons
     3. Adjust the "Maximum number of zeros allowed" as needed
-    4. Click "Continue Analysis" to process the data and generate results
+    4. Click "Start Analysis" to process the data and generate results
     5. Download the zipped SVG files containing the protein curves and summary data
+    6. You can clear all loaded data at any time using the "Clear loaded data" button
+    """)
+
+    st.header("Data Editing and Viewing")
+
+    st.write("""
+    The app allows you to view and edit both the TSV and CSV data directly within the interface:
+
+    - Use the "Toggle Edit Mode" buttons to switch between viewing and editing modes for each dataset
+    - In edit mode, you can modify cell values, add or remove rows, and make other changes as needed
+    - After making changes, click "Save Changes" to update the data in the app
+    - You can switch back to view mode to see a read-only version of your data
+
+    This feature is particularly useful for making quick adjustments to your data or exploring the sample dataset.
+    """)
+
+    st.header("Sample Data")
+
+    st.write("""
+    The app includes a sample dataset that you can load for testing or to familiarize yourself with the app's functionality:
+
+    - Click the "Load sample data" button to populate the app with example TSV and CSV data
+    - This data represents a typical TPP experiment and can be used to explore the app's features
+    - You can edit the sample data just like you would with uploaded data
+    - Use the sample data to understand the expected format and content of input files
+
+    Note: Loading sample data will replace any currently loaded data in the app.
     """)
 
     st.header("Input File Format")
@@ -114,7 +144,7 @@ def display_readme():
 
     For example, in the table above, C_1_1 and C_2_1 are replicates because they have the same Temperature (45.4) and Treatment (control).
 
-    Each row represents a unique combination of temperature, treatment, and sample. The 'Intensity' in the Samples column refers to the measurement type in your raw data file.
+    Each row represents a unique combination of temperature, treatment, and sample. The 'Intensity' in the Samples column refers to the measurement type in your fragpipe output file.
 
     Ensure your metadata CSV file follows this format for the application to process it correctly.
     """)
@@ -131,7 +161,6 @@ def display_readme():
     st.write("""
     Lukas Dolidze - [ldoli002@ucr.edu](mailto:ldoli002@ucr.edu?subject=TPP%20Curve%20Fitting%20App)
 
-    App URL: [insert hosted app URL here]
+    App URL: https://tppsolver.streamlit.app
     """)
 
-# This function can be imported and used in your main Streamlit app
