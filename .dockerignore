@@ -1,0 +1,16 @@
+# Ignore the .git directory
+.git
+
+# Ignore Docker-related files
+Dockerfile
+.dockerignore
+
+# Ignore local environment files
+*.env
+
+# Ignore Python cache files
+*.pyc
+__pycache__
+
+# Ignore other unnecessary files
+*.log

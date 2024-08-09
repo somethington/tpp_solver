@@ -11,9 +11,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from readme_content import  display_readme
 
-
-
-
 # File reading functions
 def read_tsv_file(file_path):
     return pd.read_csv(file_path, sep='\t')
@@ -28,7 +25,7 @@ def sigmoid(T, a, b, plateau):
 def paper_sigmoidal(T, A1, A2, Tm):
     return A2 + (A1 - A2) / (1 + np.exp((T - Tm)))
 
-# Data extraction and processing functions
+### Data extraction and processing functions
 
 # Extract sample information from CSV
 def extract_samples(csv_data):
@@ -260,7 +257,7 @@ def save_figure_as_svg(args):
     protein, fig = args
     svg_io = io.BytesIO()
     fig.savefig(svg_io, format='svg', bbox_inches='tight')
-    svg_io.seek(0)
+    svg_io.seek(0) 
     plt.close(fig)
     return (f"{protein}.svg", svg_io.getvalue())
 
@@ -444,7 +441,6 @@ def analysis():
 
                     plt.close('all')
 def main():
-
     st.set_page_config(
     page_title="TPP Solver",
     page_icon="logo_32x32.png",  
