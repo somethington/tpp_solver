@@ -4,6 +4,8 @@ FROM python:3.10-slim
 
 WORKDIR /tppsolver
 
+RUN apt-get install -y git
+
 RUN git clone https://github.com/somethington/tpp_solver .
 
 RUN pip3 install -r requirements.txt
