@@ -4,7 +4,12 @@ FROM python:3.10-slim
 
 WORKDIR /tppsolver
 
-RUN apt-get install -y git
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    software-properties-common \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN git clone https://github.com/somethington/tpp_solver .
 
