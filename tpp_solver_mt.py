@@ -417,7 +417,7 @@ def analysis():
                     end_time = time.time()
                     figure_generation_time = end_time - start_time
 
-                    st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds")
+                    st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
 
                     start_time = time.time()
                     with st.spinner('Preparing SVG files for download...'):
