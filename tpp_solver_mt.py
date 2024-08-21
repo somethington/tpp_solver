@@ -143,7 +143,7 @@ def average_samples(sample_groups, filtered_data):
 
         for sample in sample_groups[treatment]:
             for _, row in filtered_data.iterrows():
-                protein_id = row['Protein ID']
+                protein_id = row['Protein']
 
                 sample_vals = row[sample[1]]
                 average_val = np.mean(sample_vals)
@@ -194,7 +194,7 @@ def process_protein(args):
                 ax.text(popt[1], melt_pt, f'{popt[1]:.2f}', color='red', horizontalalignment=curpos, verticalalignment='bottom')
 
                 summary_data.append({
-                    'protein_id': protein,
+                    'protein': protein,
                     'treatment': treatment,
                     'melting point': popt[1],
                     'residuals': ','.join(map(str, (values - sigmoid(temperatures, *popt)))),
@@ -243,12 +243,12 @@ def fit_and_plot(data_dict):
     if all_summary_data:
         summary_table = pd.DataFrame(all_summary_data)
         # Ensure correct data types
-        summary_table['protein_id'] = summary_table['protein_id'].astype(str)
+        summary_table['protein'] = summary_table['protein'].astype(str)
         summary_table['treatment'] = summary_table['treatment'].astype(str)
         summary_table['melting point'] = summary_table['melting point'].astype(float)
         summary_table['residuals'] = summary_table['residuals'].astype(str)
     else:
-        summary_table = pd.DataFrame(columns=['protein_id', 'treatment', 'melting point', 'residuals'])
+        summary_table = pd.DataFrame(columns=['protein', 'treatment', 'melting point', 'residuals'])
 
     return figures, summary_table
 
