@@ -538,7 +538,7 @@ def main():
     layout="wide",
 )
     st.sidebar.title("Navigation")
-    
+    #
     # Sidebar navigation
     page = st.sidebar.radio("Go to", ["Main App", "README"])
 
