@@ -283,37 +283,6 @@ def save_as_svg(figures, dataframe):
 
 sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
 
-def get_ids_names(protein):
-    url = f"https://rest.uniprot.org/uniprotkb/{protein}?fields=go_id"
-    headers = {
-        "Accept": "text/plain; format=tsv"
-    }
-
-    response = requests.get(url, headers=headers)
-    res_list = [s.replace(";","") for s in ((response.text).split()[3:])]
-
-    if not res_list or len(res_list) == 0:
-        return "NA", "NA"
-
-    url = "https://www.ebi.ac.uk/QuickGO/services/ontology/go/terms/" + ",".join([s.replace(":","%3A") for s in res_list])
-    headers = {
-        "Accept": "application/json"
-    }
-
-    response = requests.get(url,headers)
-    data = response.json()
-
-    ids = ""
-    funcs = ""
-
-    for item in data['results']:
-        ids += item['id'] + "|"
-        funcs += item['name'] + "|"
-
-    ids = ids[:-1]
-    funcs = funcs[:-1]
-
-    return ids, funcs
 def analysis():
     st.title("TPP Analysis App")
 
@@ -454,58 +423,27 @@ def analysis():
                     st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
 
                     if include_go_annotation:
-                        summary_table['GO ID'] = ''
-                        summary_table['Function'] = ''
-                        summary_table['Link'] = ''
+                        # Load the GO annotations CSV
+                        go_csv = pd.read_csv(r"fasta/UP000000625_83333_go.csv")
                         
-                        # Get unique proteins
-                        unique_proteins = summary_table['protein'].unique()
-                        total_proteins = len(unique_proteins)
+                        # Create a dictionary from the GO CSV for quick lookup
+                        go_dict = go_csv.set_index('Protein ID').to_dict('index')
                         
-                        # Create a progress bar
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-
-                        # Create a dictionary to store results for each unique protein
-                        protein_data = {}
-
-                        go_start_time = time.time() 
-
-                        for i, protein_full in enumerate(unique_proteins):
-                            protein = protein_full.split('|')[1]
-                            link = f"https://www.uniprot.org/uniprotkb/{protein}"
-                            
-                            if protein not in protein_data:
-                                try:
-                                    ids, funcs = get_ids_names(protein)
-                                    protein_data[protein] = {
-                                        'GO ID': ids,
-                                        'Function': funcs,
-                                        'Link': link
-                                    }
-                                except Exception as e:
-                                    print(f"Error processing protein {protein}: {str(e)}")
-                                    protein_data[protein] = {
-                                        'GO ID': "NA",
-                                        'Function': "NA",
-                                        'Link': link
-                                    }
-
-                            # Update progress
-                            progress = (i + 1) / total_proteins
-                            progress_bar.progress(progress)
-                            status_text.text(f"Processed {i+1} out of {total_proteins} proteins")
-
-                        # Update the summary_table with the collected data
+                        # Efficiently update the summary table with GO annotations for each protein
                         for index, row in summary_table.iterrows():
-                            protein = row['protein'].split('|')[1]
-                            summary_table.at[index, 'GO ID'] = protein_data[protein]['GO ID']
-                            summary_table.at[index, 'Function'] = protein_data[protein]['Function']
-                            summary_table.at[index, 'Link'] = protein_data[protein]['Link']
+                            protein_id = row['protein'].split("|")[1]  # Adjust according to your data structure
+                            go_details = go_dict.get(protein_id)
 
-                        go_end_time = time.time()
-
-                        status_text.text(f"Completed processing {total_proteins} proteins in {go_end_time - go_start_time:.2f} seconds")
+                            if go_details:
+                                # Check and assign each field individually
+                                summary_table.at[index, 'GO ID'] = go_details['GO ID'] if 'GO ID' in go_details and not pd.isna(go_details['GO ID']) else 'NA'
+                                summary_table.at[index, 'Function'] = go_details['Function'] if 'Function' in go_details and not pd.isna(go_details['Function']) else 'NA'
+                                summary_table.at[index, 'Link'] = go_details['Link'] if 'Link' in go_details and not pd.isna(go_details['Link']) else 'NA'
+                            else:
+                                # Assign 'NA' if no data found for the protein
+                                summary_table.at[index, 'GO ID'] = 'NA'
+                                summary_table.at[index, 'Function'] = 'NA'
+                                summary_table.at[index, 'Link'] = 'NA'
 
                         st.write("GO annotations added to the summary table.")
 
