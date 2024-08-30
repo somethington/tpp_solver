@@ -8,7 +8,6 @@ import pandas as pd
 import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
-import requests
 from scipy.optimize import curve_fit
 from readme_content import  display_readme
 
@@ -283,6 +282,73 @@ def save_as_svg(figures, dataframe):
 
 sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
 
+def extract_species_from_fasta(file_path):
+    with open(file_path, 'r') as file:
+        first_line = file.readline().strip()
+        # Extract species name from the header
+        # Example: >sp|A5A612|YMGJ_ECOLI Uncharacterized protein YmgJ OS=Escherichia coli (strain K12) OX=83333 GN=ymgJ PE=4 SV=1
+        species_start = first_line.find("OS=") + 3
+        species_end = first_line.find(" OX=", species_start)
+        return first_line[species_start:species_end]
+
+def go_annotation():
+    # Display all fasta files from the fasta directory
+    fasta_directory = "fasta"
+    fasta_files = [file for file in os.listdir(fasta_directory) if file.endswith('.fasta')]
+    
+    # Create a dictionary mapping species names to file names
+    species_to_file = {}
+    for file in fasta_files:
+        file_path = os.path.join(fasta_directory, file)
+        species_name = extract_species_from_fasta(file_path)
+        species_to_file[species_name] = file
+
+    protein_csv = st.file_uploader("Upload protein CSV file", type=['csv'])
+    
+    # Use species names in the selectbox
+    species = st.selectbox("Select species", list(species_to_file.keys()))
+
+    if st.button("Start annotation"):
+        if protein_csv is not None and species:
+            # Load the user-uploaded protein CSV file
+            protein_data = pd.read_csv(protein_csv)
+            
+            # Load the selected proteome GO CSV
+            fasta_name = species_to_file[species]
+            go_csv_name = fasta_name.replace('.fasta', '_go.csv')
+            go_csv_path = os.path.join(fasta_directory, go_csv_name)
+            go_data = pd.read_csv(go_csv_path)
+            
+            # Map GO annotations using a dictionary for quick lookup
+            go_dict = go_data.set_index('Protein ID').to_dict('index')
+            
+            # Prepare the output DataFrame with necessary columns
+            annotated_data = pd.DataFrame(protein_data['Protein ID'].unique(), columns=['Protein ID'])
+            annotated_data['GO ID'] = 'NA'
+            annotated_data['Function'] = 'NA'
+            annotated_data['Link'] = 'NA'
+            
+            # Annotate each protein with GO information
+            for index, row in annotated_data.iterrows():
+                protein_id = row['Protein ID'].split("|")[1]  # Adjust according to your data structure
+                go_details = go_dict.get(protein_id)
+                
+                if go_details:
+                    annotated_data.at[index, 'GO ID'] = go_details.get('GO ID', 'NA')
+                    annotated_data.at[index, 'Function'] = go_details.get('Function', 'NA')
+                    annotated_data.at[index, 'Link'] = go_details.get('Link', 'NA')
+            
+            # Show the annotated DataFrame in the app
+            st.dataframe(annotated_data)
+            
+            # Optional: Allow users to download the annotated data
+            csv = annotated_data.to_csv(index=False)
+            st.download_button(
+                label="Download annotated CSV",
+                data=csv,
+                file_name=f"annotated_proteins_{species.replace(' ', '_')}.csv",
+                mime='text/csv',
+            )
 def analysis():
     st.title("TPP Analysis App")
 
@@ -379,55 +445,74 @@ def analysis():
                 st.dataframe(st.session_state.csv_data)
 
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
-            st.subheader("Analysis Setup")
+        st.subheader("Analysis Setup")
 
-            # Extract sample information from CSV
-            metadata = extract_samples(st.session_state.csv_data)
+        # Extract sample information from CSV
+        metadata = extract_samples(st.session_state.csv_data)
 
-            if metadata is None:
-                st.error("Failed to extract samples from metadata. Please check your CSV file.")
-            else:
-                # Set maximum number of zeros allowed
-                max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
+        if metadata is None:
+            st.error("Failed to extract samples from metadata. Please check your CSV file.")
+        else:
+            # Set maximum number of zeros allowed
+            max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
 
-                # Count rows to be dropped
-                droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
-                st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
+            # Count rows to be dropped
+            droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
+            st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
+            
+            include_go_annotation = st.checkbox("Include GO annotation", value=False)
+            
+            if include_go_annotation:
+                # Display all fasta files from the fasta directory
+                fasta_directory = "fasta"
+                fasta_files = [file for file in os.listdir(fasta_directory) if file.endswith('.fasta')]
                 
-                include_go_annotation = st.checkbox("Include GO annotation", value=False)
-                
-                # Start Analysis button
-                if st.button("Start Analysis"):
-                    # Process data
-                    tsv_data = st.session_state.tsv_data
-                    csv_data = st.session_state.csv_data
+                # Create a dictionary mapping species names to file names
+                species_to_file = {}
+                for file in fasta_files:
+                    file_path = os.path.join(fasta_directory, file)
+                    species_name = extract_species_from_fasta(file_path)
+                    species_to_file[species_name] = file
 
-                    # Generate and display results
-                    filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
+                # Use species names in the selectbox
+                selected_species = st.selectbox("Select species for GO annotation", list(species_to_file.keys()))
+            
+            # Start Analysis button
+            if st.button("Start Analysis"):
+                # Process data
+                tsv_data = st.session_state.tsv_data
+                csv_data = st.session_state.csv_data
 
-                    st.subheader("Analysis Results")
-                    st.write(f"Number of rows after filtering: {len(filtered_data)}")
-                    st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
-                    st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+                # Generate and display results
+                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
 
-                    filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
-                    sample_groups = get_replicant_lists(csv_data)
-                    average_dict = average_samples(sample_groups, filtered_data_imputed)
+                st.subheader("Analysis Results")
+                st.write(f"Number of rows after filtering: {len(filtered_data)}")
+                st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
+                st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
 
-                    start_time = time.time()
-                    with st.spinner("Fitting curves and generating plots..."):
-                        figures, summary_table = fit_and_plot(average_dict)
-                    end_time = time.time()
-                    figure_generation_time = end_time - start_time
+                filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
+                sample_groups = get_replicant_lists(csv_data)
+                average_dict = average_samples(sample_groups, filtered_data_imputed)
 
-                    st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
+                start_time = time.time()
+                with st.spinner("Fitting curves and generating plots..."):
+                    figures, summary_table = fit_and_plot(average_dict)
+                end_time = time.time()
+                figure_generation_time = end_time - start_time
 
-                    if include_go_annotation:
-                        # Load the GO annotations CSV
-                        go_csv = pd.read_csv(r"fasta/UP000000625_83333_go.csv")
+                st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
+
+                if include_go_annotation:
+                    with st.spinner("Adding GO annotations..."):
+                        # Load the selected proteome GO CSV
+                        fasta_name = species_to_file[selected_species]
+                        go_csv_name = fasta_name.replace('.fasta', '_go.csv')
+                        go_csv_path = os.path.join(fasta_directory, go_csv_name)
+                        go_data = pd.read_csv(go_csv_path)
                         
                         # Create a dictionary from the GO CSV for quick lookup
-                        go_dict = go_csv.set_index('Protein ID').to_dict('index')
+                        go_dict = go_data.set_index('Protein ID').to_dict('index')
                         
                         # Efficiently update the summary table with GO annotations for each protein
                         for index, row in summary_table.iterrows():
@@ -436,9 +521,9 @@ def analysis():
 
                             if go_details:
                                 # Check and assign each field individually
-                                summary_table.at[index, 'GO ID'] = go_details['GO ID'] if 'GO ID' in go_details and not pd.isna(go_details['GO ID']) else 'NA'
-                                summary_table.at[index, 'Function'] = go_details['Function'] if 'Function' in go_details and not pd.isna(go_details['Function']) else 'NA'
-                                summary_table.at[index, 'Link'] = go_details['Link'] if 'Link' in go_details and not pd.isna(go_details['Link']) else 'NA'
+                                summary_table.at[index, 'GO ID'] = go_details.get('GO ID', 'NA')
+                                summary_table.at[index, 'Function'] = go_details.get('Function', 'NA')
+                                summary_table.at[index, 'Link'] = go_details.get('Link', 'NA')
                             else:
                                 # Assign 'NA' if no data found for the protein
                                 summary_table.at[index, 'GO ID'] = 'NA'
@@ -447,28 +532,28 @@ def analysis():
 
                         st.write("GO annotations added to the summary table.")
 
-                    start_time = time.time()
+                start_time = time.time()
 
-                    with st.spinner('Preparing SVG files for download...'):
-                        zip_file = save_as_svg(figures, summary_table)
-                    end_time = time.time()
-                    figure_save_time = end_time - start_time
+                with st.spinner('Preparing SVG files for download...'):
+                    zip_file = save_as_svg(figures, summary_table)
+                end_time = time.time()
+                figure_save_time = end_time - start_time
 
-                    st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+                st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
 
-                    # Provide download option for results
-                    st.download_button(
-                        label="Download zipped SVGs",
-                        data=zip_file,
-                        file_name="protein_curves.zip",
-                        mime="application/zip"
-                    )
+                # Provide download option for results
+                st.download_button(
+                    label="Download zipped SVGs",
+                    data=zip_file,
+                    file_name="protein_curves.zip",
+                    mime="application/zip"
+                )
 
-                    # Display summary table
-                    st.subheader("Summary Table")
-                    st.dataframe(summary_table)
+                # Display summary table
+                st.subheader("Summary Table")
+                st.dataframe(summary_table)
 
-                    plt.close('all')
+                plt.close('all')
 def main():
     st.set_page_config(
     page_title="TPP Solver",
@@ -478,12 +563,14 @@ def main():
     st.sidebar.title("Navigation")
     #
     # Sidebar navigation
-    page = st.sidebar.radio("Go to", ["Main App", "README"])
+    page = st.sidebar.radio("Go to", ["Main App", 'GO Annotation', "README"])
 
     if page == "README":
         display_readme()
     elif page == "Main App":
         analysis()
+    elif page == "GO Annotation":
+        go_annotation()
 
 if __name__ == "__main__":
     main()

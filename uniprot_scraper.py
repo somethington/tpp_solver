@@ -4,8 +4,6 @@ import requests
 import time
 import os
 
-fasta_file = r"fasta/UP000000625_83333.fasta"
-output_file = fasta_file.replace(".fasta", "_go.csv")
 
 def get_ids_names(protein):
     url = f"https://rest.uniprot.org/uniprotkb/{protein}?fields=go_id"
@@ -36,44 +34,54 @@ def get_ids_names(protein):
 
 def extract_protein_ids(fasta_file):
     protein_ids = []
-    for record in SeqIO.parse(fasta_file, "fasta"):
+    fasta_file_path = os.path.join("fasta", fasta_file)  # Construct the full path to the FASTA file
+    if not os.path.exists(fasta_file_path):
+        print(f"File not found: {fasta_file_path}")
+        return protein_ids  # Return an empty list if the file is not found
+
+    for record in SeqIO.parse(fasta_file_path, "fasta"):
         description = record.description
         protein_id = description.split('|')[1]
         protein_ids.append(protein_id)
     return protein_ids
 
 def main():
-    # Check if output file exists and read it if yes
-    if os.path.exists(output_file):
-        scraped_df = pd.read_csv(output_file)
-        processed_ids = set(scraped_df['Protein ID'].tolist())
-    else:
-        scraped_df = pd.DataFrame(columns=['Protein ID', 'GO ID', 'Function', 'Link'])
-        processed_ids = set()
+    fasta_directory = "fasta"
 
-    protein_ids = extract_protein_ids(fasta_file)
-    new_entries = []
+    for fasta_file in os.listdir(fasta_directory):
+        output_file = os.path.join(fasta_directory, fasta_file.replace(".fasta", "_go.csv"))
 
-    for protein in protein_ids:
-        if protein in processed_ids:
-            continue  # Skip already processed proteins
+        # Check if output file exists and read it if yes
+        if os.path.exists(output_file):
+            scraped_df = pd.read_csv(output_file)
+            processed_ids = set(scraped_df['Protein ID'].tolist())
+        else:
+            scraped_df = pd.DataFrame(columns=['Protein ID', 'GO ID', 'Function', 'Link'])
+            processed_ids = set()
 
-        link = f"https://www.uniprot.org/uniprotkb/{protein}"
-        ids, funcs = get_ids_names(protein)
-        new_entry = {
-            'Protein ID': protein,
-            'GO ID': ids,
-            'Function': funcs,
-            'Link': link
-        }
-        new_entries.append(new_entry)
-        # Print progress
-        print(protein, ids, funcs, link)
-        # Add to DataFrame and save immediately
-        scraped_df = pd.concat([scraped_df, pd.DataFrame([new_entry])], ignore_index=True)
-        scraped_df.to_csv(output_file, index=False)
+        protein_ids = extract_protein_ids(fasta_file)
+        new_entries = []
 
-    print('Processing complete')
+        for protein in protein_ids:
+            if protein in processed_ids:
+                continue  # Skip already processed proteins
+
+            link = f"https://www.uniprot.org/uniprotkb/{protein}"
+            ids, funcs = get_ids_names(protein)
+            new_entry = {
+                'Protein ID': protein,
+                'GO ID': ids,
+                'Function': funcs,
+                'Link': link
+            }
+            new_entries.append(new_entry)
+            # Print progress
+            print(protein, ids, funcs, link)
+            # Add to DataFrame and save immediately
+            scraped_df = pd.concat([scraped_df, pd.DataFrame([new_entry])], ignore_index=True)
+            scraped_df.to_csv(output_file, index=False)
+
+        print('Processing complete')
 
 if __name__ == "__main__":
     main()
