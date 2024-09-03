@@ -3,7 +3,7 @@ name: Publish Multi-Platform Docker Image
 on:
   push:
     branches:
-      - '**'  # This will trigger the action for all branches
+      - '**'  
 
 jobs:
   build:
