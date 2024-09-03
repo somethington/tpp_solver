@@ -8,7 +8,10 @@ import pandas as pd
 import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
+import duckdb
 from scipy.optimize import curve_fit
+from scipy.stats import shapiro, boxcox, yeojohnson
+import seaborn as sns
 from readme_content import  display_readme
 
 # File reading functions
@@ -143,7 +146,7 @@ def average_samples(sample_groups, filtered_data):
 
         for sample in sample_groups[treatment]:
             for _, row in filtered_data.iterrows():
-                protein_id = row['Protein']
+                protein_id = row['Protein ID']
 
                 sample_vals = row[sample[1]]
                 average_val = np.mean(sample_vals)
@@ -282,6 +285,187 @@ def save_as_svg(figures, dataframe):
 
 sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
 
+def add_go_annotations(csv_data, protein_id_column, selected_species, conn):
+    protein_ids = csv_data[protein_id_column].astype(str).tolist()
+    
+    # Get GO annotations from the database
+    annotations = get_go_annotations(conn, protein_ids, selected_species)
+    
+    # Add GO annotations directly to the CSV data
+    csv_data['GO ID'] = csv_data[protein_id_column].apply(
+        lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+    )
+    csv_data['Function'] = csv_data[protein_id_column].apply(
+        lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+    )
+    csv_data['Link'] = csv_data[protein_id_column].apply(
+        lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+    )
+
+    return csv_data
+
+def get_go_annotations(conn, protein_ids, species_name):
+    query = """
+    SELECT p.id AS protein_id, g.id AS go_id, g.function, p.link
+    FROM proteins p
+    JOIN protein_go_terms pgt ON p.id = pgt.protein_id
+    JOIN go_terms g ON pgt.go_term_id = g.id
+    JOIN species s ON p.species_id = s.id
+    WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
+    """
+    result = conn.execute(query, [protein_ids, species_name]).fetchall()
+    
+    annotations = {}
+    for row in result:
+        protein_id, go_id, function, link = row
+        if protein_id not in annotations:
+            annotations[protein_id] = {'GO ID': [], 'Function': [], 'Link': link}
+        annotations[protein_id]['GO ID'].append(go_id)
+        annotations[protein_id]['Function'].append(function)
+    
+    return annotations
+
+def extract_species_from_fasta(file_path):
+    with open(file_path, 'r') as file:
+        first_line = file.readline().strip()
+        # Extract species name from the header
+        # Example: >sp|A5A612|YMGJ_ECOLI Uncharacterized protein YmgJ OS=Escherichia coli (strain K12) OX=83333 GN=ymgJ PE=4 SV=1
+        species_start = first_line.find("OS=") + 3
+        species_end = first_line.find(" OX=", species_start)
+        return first_line[species_start:species_end]
+
+def go_annotation():
+    st.title("GO Annotation Tool")
+
+    conn = duckdb.connect('multi_proteome_go.duckdb')
+
+    protein_csv = st.file_uploader("Upload Protein CSV file", type=['csv'])
+
+    if protein_csv is not None:
+        protein_data = pd.read_csv(protein_csv)
+        st.write("Preview of uploaded data:")
+        st.dataframe(protein_data.head())  # Show preview of the first few rows
+
+        protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
+
+        if protein_id_column:
+            species = conn.execute("SELECT name FROM species").fetchall()
+            species_names = [s[0] for s in species]
+            selected_species = st.selectbox("Select species for GO annotation", species_names)
+
+            if st.button("Start Annotation"):
+                protein_ids = protein_data[protein_id_column].astype(str).tolist()
+
+                annotations = get_go_annotations(conn, protein_ids, selected_species)
+                protein_data['GO ID'] = protein_data[protein_id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+                )
+                protein_data['Function'] = protein_data[protein_id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+                )
+                protein_data['Link'] = protein_data[protein_id_column].apply(
+                    lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+                )
+
+                # Display the updated CSV with annotations
+                st.subheader("Updated CSV Data with GO Annotations")
+                st.dataframe(protein_data)
+
+                # Provide download option for the updated CSV
+                csv = protein_data.to_csv(index=False)
+                st.download_button(
+                    label="Download Annotated CSV",
+                    data=csv,
+                    file_name=f"annotated_proteins_{selected_species.replace(' ', '_')}.csv",
+                    mime='text/csv',
+                )
+        else:
+            st.warning("Please select a column containing Protein IDs.")
+
+    # Close the database connection
+    conn.close()
+    
+def perform_transformations_and_shapiro_test(summary_table, transformations_to_apply):
+    # Pivot the summary table to get the ΔTm values
+    df_pivot = summary_table.pivot(index='protein', columns='treatment', values='melting point')
+    df_pivot['ΔTm'] = df_pivot.iloc[:, 0] - df_pivot.iloc[:, 1]
+    delta_tm = df_pivot['ΔTm'].dropna()
+
+    transformations = {
+        'Original ΔTm': delta_tm
+    }
+    
+    if 'Log' in transformations_to_apply:
+        transformations['Log(ΔTm + 1)'] = np.log1p(delta_tm)
+    if 'Square Root' in transformations_to_apply:
+        transformations['Square Root of ΔTm'] = np.sqrt(delta_tm)
+    if 'Box-Cox' in transformations_to_apply:
+        if (delta_tm > 0).all():
+            transformations['Box-Cox ΔTm'] = pd.Series(boxcox(delta_tm)[0], index=delta_tm.index)
+        else:
+            transformations['Box-Cox ΔTm (Shifted)'] = pd.Series(boxcox(delta_tm - delta_tm.min() + 1)[0], index=delta_tm.index)
+    if 'Yeo-Johnson' in transformations_to_apply:
+        transformations['Yeo-Johnson ΔTm'] = pd.Series(yeojohnson(delta_tm)[0], index=delta_tm.index)
+
+    results = {}
+    
+    for name, transformed_data in transformations.items():
+        # Ensure transformed data is in a pandas Series to handle dropna() correctly
+        transformed_data = transformed_data.dropna()
+        
+        if len(transformed_data) == 0:
+            st.warning(f"No valid data available for {name} after transformation.")
+            continue
+        
+        # Perform Shapiro-Wilk test
+        stat, p_value = shapiro(transformed_data)
+        results[name] = (stat, p_value)
+        
+        # Display results
+        st.subheader(f"Shapiro-Wilk Test for {name}")
+        st.write(f"Shapiro-Wilk Test Statistic: {stat}")
+        st.write(f"P-value: {p_value}")
+        
+        if p_value > 0.05:
+            st.write(f"The data is normally distributed after {name} (fail to reject H0).")
+        else:
+            st.write(f"The data is not normally distributed after {name} (reject H0).")
+        
+        # Plot the distribution of transformed ΔTm
+        st.subheader(f"Distribution of {name}")
+        plt.figure(figsize=(6, 4))  # Further reduced the figure size here
+        sns.histplot(transformed_data, kde=True, bins=30)
+        plt.title(f"Distribution of {name}")
+        plt.xlabel(name)
+        plt.ylabel("Frequency")
+        plt.grid(True)
+        st.pyplot(plt)
+    
+    return results
+
+def select_normality_tests():
+    st.subheader("Normality Test Selection")
+    with st.expander("Select Normality Tests to Apply"):
+        log_transform = st.checkbox("Log Transformation", value=True)
+        sqrt_transform = st.checkbox("Square Root Transformation", value=True)
+        boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
+        yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
+
+    # Collect selected transformations
+    transformations_to_apply = []
+    if log_transform:
+        transformations_to_apply.append("Log")
+    if sqrt_transform:
+        transformations_to_apply.append("Square Root")
+    if boxcox_transform:
+        transformations_to_apply.append("Box-Cox")
+    if yeojohnson_transform:
+        transformations_to_apply.append("Yeo-Johnson")
+
+    # Store the selected transformations in the session state
+    st.session_state['transformations_to_apply'] = transformations_to_apply
+
+
 def analysis():
     st.title("TPP Analysis App")
 
@@ -378,68 +562,111 @@ def analysis():
                 st.dataframe(st.session_state.csv_data)
 
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
-            st.subheader("Analysis Setup")
+        st.subheader("Analysis Setup")
 
-            # Extract sample information from CSV
-            metadata = extract_samples(st.session_state.csv_data)
+        # Extract sample information from CSV
+        metadata = extract_samples(st.session_state.csv_data)
 
-            if metadata is None:
-                st.error("Failed to extract samples from metadata. Please check your CSV file.")
-            else:
-                # Set maximum number of zeros allowed
-                max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
+        if metadata is None:
+            st.error("Failed to extract samples from metadata. Please check your CSV file.")
+        else:
+            # Set maximum number of zeros allowed
+            max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
 
-                # Count rows to be dropped
-                droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
-                st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
+            # Count rows to be dropped
+            droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
+            st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
+            
+            include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
-                # Start Analysis button
-                if st.button("Start Analysis"):
-                    # Process data
-                    tsv_data = st.session_state.tsv_data
-                    csv_data = st.session_state.csv_data
+            if include_go_annotation:
+                # Connect to the database
+                conn = duckdb.connect('multi_proteome_go.duckdb')
 
-                    # Generate and display results
-                    filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
+                # Get all species from the database
+                species = conn.execute("SELECT name FROM species").fetchall()
+                species_names = [s[0] for s in species]
 
-                    st.subheader("Analysis Results")
-                    st.write(f"Number of rows after filtering: {len(filtered_data)}")
-                    st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
-                    st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
+                # Use species names in the selectbox
+                selected_species = st.selectbox("Select species for GO annotation", species_names)
 
-                    filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
-                    sample_groups = get_replicant_lists(csv_data)
-                    average_dict = average_samples(sample_groups, filtered_data_imputed)
+            select_normality_tests()
 
-                    start_time = time.time()
-                    with st.spinner("Fitting curves and generating plots..."):
-                        figures, summary_table = fit_and_plot(average_dict)
-                    end_time = time.time()
-                    figure_generation_time = end_time - start_time
+            
 
-                    st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
+            # Start Analysis button
+            if st.button("Start Analysis"):
+                # Process data
+                tsv_data = st.session_state.tsv_data
+                csv_data = st.session_state.csv_data
 
-                    start_time = time.time()
-                    with st.spinner('Preparing SVG files for download...'):
-                        zip_file = save_as_svg(figures, summary_table)
-                    end_time = time.time()
-                    figure_save_time = end_time - start_time
+                # Generate and display results
+                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
 
-                    st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+                st.subheader("Analysis Results")
+                st.write(f"Number of rows after filtering: {len(filtered_data)}")
+                st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
+                st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
 
-                    # Provide download option for results
-                    st.download_button(
-                        label="Download zipped SVGs",
-                        data=zip_file,
-                        file_name="protein_curves.zip",
-                        mime="application/zip"
-                    )
+                filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
+                sample_groups = get_replicant_lists(csv_data)
+                average_dict = average_samples(sample_groups, filtered_data_imputed)
 
-                    # Display summary table
-                    st.subheader("Summary Table")
-                    st.dataframe(summary_table)
+                start_time = time.time()
+                with st.spinner("Fitting curves and generating plots..."):
+                    figures, summary_table = fit_and_plot(average_dict)
+                end_time = time.time()
+                figure_generation_time = end_time - start_time
 
-                    plt.close('all')
+                st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
+
+
+                if include_go_annotation:
+                    with st.spinner("Adding GO annotations..."):
+                        protein_ids = summary_table['protein'].tolist()
+                        
+                        # Get GO annotations from the database, now using selected_species
+                        annotations = get_go_annotations(conn, protein_ids, selected_species)
+                        
+                        # Update the summary table with GO annotations
+                        for index, row in summary_table.iterrows():
+                            protein_id = row['protein']
+                            annotation = annotations.get(protein_id, {'GO ID': ['NA'], 'Function': ['NA'], 'Link': 'NA'})
+                            summary_table.at[index, 'GO ID'] = ';'.join(annotation['GO ID'])
+                            summary_table.at[index, 'Function'] = ';'.join(annotation['Function'])
+                            summary_table.at[index, 'Link'] = annotation['Link']
+
+                        st.write("GO annotations added to the summary table.")
+
+                    # Close the database connection
+                    conn.close()
+                
+                if 'transformations_to_apply' in st.session_state:
+                    perform_transformations_and_shapiro_test(summary_table, st.session_state['transformations_to_apply'])
+
+                start_time = time.time()
+
+                with st.spinner('Preparing SVG files for download...'):
+                    zip_file = save_as_svg(figures, summary_table)
+                end_time = time.time()
+                figure_save_time = end_time - start_time
+
+                st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+
+                # Provide download option for results
+                st.download_button(
+                    label="Download zipped SVGs",
+                    data=zip_file,
+                    file_name="protein_curves.zip",
+                    mime="application/zip"
+                )
+
+                # Display summary table
+                st.subheader("Summary Table")
+                st.dataframe(summary_table)
+
+                plt.close('all')
+
 def main():
     st.set_page_config(
     page_title="TPP Solver",
@@ -447,14 +674,16 @@ def main():
     layout="wide",
 )
     st.sidebar.title("Navigation")
-    
+    #
     # Sidebar navigation
-    page = st.sidebar.radio("Go to", ["Main App", "README"])
+    page = st.sidebar.radio("Go to", ["Main App", 'GO Annotation', "README"])
 
     if page == "README":
         display_readme()
     elif page == "Main App":
         analysis()
+    elif page == "GO Annotation":
+        go_annotation()
 
 if __name__ == "__main__":
     main()

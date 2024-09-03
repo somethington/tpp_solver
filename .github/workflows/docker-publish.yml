@@ -3,7 +3,8 @@ name: Publish Multi-Platform Docker Image
 on:
   push:
     branches:
-      - '**'  # This triggers the action for all branches
+      - '**'  
+
 
 jobs:
   build:
@@ -29,6 +30,4 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/tpp_solver:${{ github.ref_name }}  # Tag with branch name
-            ${{ github.ref == 'refs/heads/main' && 'ghcr.io/${{ github.repository_owner }}/tpp_solver:latest' || '' }}  # Tag as latest if main branch
+          tags: ghcr.io/${{ github.repository_owner }}/tpp_solver:${{ github.ref_name }}

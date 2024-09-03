@@ -4,6 +4,8 @@
   <img src="logo.svg" alt="Lab Logo" width="200"/>
 </p>
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://qb.junglemog.cc)
+
 This hosted Streamlit application performs Thermal Proteome Profiling (TPP) analysis on protein data.
 
 ## Sample Output
