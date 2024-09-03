@@ -1,5 +1,4 @@
 # app/Dockerfile
-
 FROM python:3.10-slim
 
 WORKDIR /tppsolver
@@ -11,11 +10,8 @@ RUN apt-get update && apt-get install -y \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone https://github.com/somethington/tpp_solver .
-
+COPY . /tppsolver
 RUN pip3 install -r requirements.txt
-
-EXPOSE 8501
 
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health
 

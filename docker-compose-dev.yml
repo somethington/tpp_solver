@@ -1,0 +1,5 @@
+version: '3'
+services:
+  tppsolver-streamlit:
+    ports:
+    - "8501:8501"
