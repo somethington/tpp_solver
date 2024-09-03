@@ -8,7 +8,10 @@ import pandas as pd
 import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
+import duckdb
 from scipy.optimize import curve_fit
+from scipy.stats import shapiro, boxcox, yeojohnson
+import seaborn as sns
 from readme_content import  display_readme
 
 # File reading functions
@@ -143,7 +146,7 @@ def average_samples(sample_groups, filtered_data):
 
         for sample in sample_groups[treatment]:
             for _, row in filtered_data.iterrows():
-                protein_id = row['Protein']
+                protein_id = row['Protein ID']
 
                 sample_vals = row[sample[1]]
                 average_val = np.mean(sample_vals)
@@ -282,6 +285,46 @@ def save_as_svg(figures, dataframe):
 
 sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
 
+def add_go_annotations(csv_data, protein_id_column, selected_species, conn):
+    protein_ids = csv_data[protein_id_column].astype(str).tolist()
+    
+    # Get GO annotations from the database
+    annotations = get_go_annotations(conn, protein_ids, selected_species)
+    
+    # Add GO annotations directly to the CSV data
+    csv_data['GO ID'] = csv_data[protein_id_column].apply(
+        lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+    )
+    csv_data['Function'] = csv_data[protein_id_column].apply(
+        lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+    )
+    csv_data['Link'] = csv_data[protein_id_column].apply(
+        lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+    )
+
+    return csv_data
+
+def get_go_annotations(conn, protein_ids, species_name):
+    query = """
+    SELECT p.id AS protein_id, g.id AS go_id, g.function, p.link
+    FROM proteins p
+    JOIN protein_go_terms pgt ON p.id = pgt.protein_id
+    JOIN go_terms g ON pgt.go_term_id = g.id
+    JOIN species s ON p.species_id = s.id
+    WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
+    """
+    result = conn.execute(query, [protein_ids, species_name]).fetchall()
+    
+    annotations = {}
+    for row in result:
+        protein_id, go_id, function, link = row
+        if protein_id not in annotations:
+            annotations[protein_id] = {'GO ID': [], 'Function': [], 'Link': link}
+        annotations[protein_id]['GO ID'].append(go_id)
+        annotations[protein_id]['Function'].append(function)
+    
+    return annotations
+
 def extract_species_from_fasta(file_path):
     with open(file_path, 'r') as file:
         first_line = file.readline().strip()
@@ -292,63 +335,137 @@ def extract_species_from_fasta(file_path):
         return first_line[species_start:species_end]
 
 def go_annotation():
-    # Display all fasta files from the fasta directory
-    fasta_directory = "fasta"
-    fasta_files = [file for file in os.listdir(fasta_directory) if file.endswith('.fasta')]
-    
-    # Create a dictionary mapping species names to file names
-    species_to_file = {}
-    for file in fasta_files:
-        file_path = os.path.join(fasta_directory, file)
-        species_name = extract_species_from_fasta(file_path)
-        species_to_file[species_name] = file
+    st.title("GO Annotation Tool")
 
-    protein_csv = st.file_uploader("Upload protein CSV file", type=['csv'])
-    
-    # Use species names in the selectbox
-    species = st.selectbox("Select species", list(species_to_file.keys()))
+    conn = duckdb.connect('multi_proteome_go.duckdb')
 
-    if st.button("Start annotation"):
-        if protein_csv is not None and species:
-            # Load the user-uploaded protein CSV file
-            protein_data = pd.read_csv(protein_csv)
-            
-            # Load the selected proteome GO CSV
-            fasta_name = species_to_file[species]
-            go_csv_name = fasta_name.replace('.fasta', '_go.csv')
-            go_csv_path = os.path.join(fasta_directory, go_csv_name)
-            go_data = pd.read_csv(go_csv_path)
-            
-            # Map GO annotations using a dictionary for quick lookup
-            go_dict = go_data.set_index('Protein ID').to_dict('index')
-            
-            # Prepare the output DataFrame with necessary columns
-            annotated_data = pd.DataFrame(protein_data['Protein ID'].unique(), columns=['Protein ID'])
-            annotated_data['GO ID'] = 'NA'
-            annotated_data['Function'] = 'NA'
-            annotated_data['Link'] = 'NA'
-            
-            # Annotate each protein with GO information
-            for index, row in annotated_data.iterrows():
-                protein_id = row['Protein ID'].split("|")[1]  # Adjust according to your data structure
-                go_details = go_dict.get(protein_id)
-                
-                if go_details:
-                    annotated_data.at[index, 'GO ID'] = go_details.get('GO ID', 'NA')
-                    annotated_data.at[index, 'Function'] = go_details.get('Function', 'NA')
-                    annotated_data.at[index, 'Link'] = go_details.get('Link', 'NA')
-            
-            # Show the annotated DataFrame in the app
-            st.dataframe(annotated_data)
-            
-            # Optional: Allow users to download the annotated data
-            csv = annotated_data.to_csv(index=False)
-            st.download_button(
-                label="Download annotated CSV",
-                data=csv,
-                file_name=f"annotated_proteins_{species.replace(' ', '_')}.csv",
-                mime='text/csv',
-            )
+    protein_csv = st.file_uploader("Upload Protein CSV file", type=['csv'])
+
+    if protein_csv is not None:
+        protein_data = pd.read_csv(protein_csv)
+        st.write("Preview of uploaded data:")
+        st.dataframe(protein_data.head())  # Show preview of the first few rows
+
+        protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
+
+        if protein_id_column:
+            species = conn.execute("SELECT name FROM species").fetchall()
+            species_names = [s[0] for s in species]
+            selected_species = st.selectbox("Select species for GO annotation", species_names)
+
+            if st.button("Start Annotation"):
+                protein_ids = protein_data[protein_id_column].astype(str).tolist()
+
+                annotations = get_go_annotations(conn, protein_ids, selected_species)
+                protein_data['GO ID'] = protein_data[protein_id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+                )
+                protein_data['Function'] = protein_data[protein_id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+                )
+                protein_data['Link'] = protein_data[protein_id_column].apply(
+                    lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+                )
+
+                # Display the updated CSV with annotations
+                st.subheader("Updated CSV Data with GO Annotations")
+                st.dataframe(protein_data)
+
+                # Provide download option for the updated CSV
+                csv = protein_data.to_csv(index=False)
+                st.download_button(
+                    label="Download Annotated CSV",
+                    data=csv,
+                    file_name=f"annotated_proteins_{selected_species.replace(' ', '_')}.csv",
+                    mime='text/csv',
+                )
+        else:
+            st.warning("Please select a column containing Protein IDs.")
+
+    # Close the database connection
+    conn.close()
+    
+def perform_transformations_and_shapiro_test(summary_table, transformations_to_apply):
+    # Pivot the summary table to get the ΔTm values
+    df_pivot = summary_table.pivot(index='protein', columns='treatment', values='melting point')
+    df_pivot['ΔTm'] = df_pivot.iloc[:, 0] - df_pivot.iloc[:, 1]
+    delta_tm = df_pivot['ΔTm'].dropna()
+
+    transformations = {
+        'Original ΔTm': delta_tm
+    }
+    
+    if 'Log' in transformations_to_apply:
+        transformations['Log(ΔTm + 1)'] = np.log1p(delta_tm)
+    if 'Square Root' in transformations_to_apply:
+        transformations['Square Root of ΔTm'] = np.sqrt(delta_tm)
+    if 'Box-Cox' in transformations_to_apply:
+        if (delta_tm > 0).all():
+            transformations['Box-Cox ΔTm'] = pd.Series(boxcox(delta_tm)[0], index=delta_tm.index)
+        else:
+            transformations['Box-Cox ΔTm (Shifted)'] = pd.Series(boxcox(delta_tm - delta_tm.min() + 1)[0], index=delta_tm.index)
+    if 'Yeo-Johnson' in transformations_to_apply:
+        transformations['Yeo-Johnson ΔTm'] = pd.Series(yeojohnson(delta_tm)[0], index=delta_tm.index)
+
+    results = {}
+    
+    for name, transformed_data in transformations.items():
+        # Ensure transformed data is in a pandas Series to handle dropna() correctly
+        transformed_data = transformed_data.dropna()
+        
+        if len(transformed_data) == 0:
+            st.warning(f"No valid data available for {name} after transformation.")
+            continue
+        
+        # Perform Shapiro-Wilk test
+        stat, p_value = shapiro(transformed_data)
+        results[name] = (stat, p_value)
+        
+        # Display results
+        st.subheader(f"Shapiro-Wilk Test for {name}")
+        st.write(f"Shapiro-Wilk Test Statistic: {stat}")
+        st.write(f"P-value: {p_value}")
+        
+        if p_value > 0.05:
+            st.write(f"The data is normally distributed after {name} (fail to reject H0).")
+        else:
+            st.write(f"The data is not normally distributed after {name} (reject H0).")
+        
+        # Plot the distribution of transformed ΔTm
+        st.subheader(f"Distribution of {name}")
+        plt.figure(figsize=(6, 4))  # Further reduced the figure size here
+        sns.histplot(transformed_data, kde=True, bins=30)
+        plt.title(f"Distribution of {name}")
+        plt.xlabel(name)
+        plt.ylabel("Frequency")
+        plt.grid(True)
+        st.pyplot(plt)
+    
+    return results
+
+def select_normality_tests():
+    st.subheader("Normality Test Selection")
+    with st.expander("Select Normality Tests to Apply"):
+        log_transform = st.checkbox("Log Transformation", value=True)
+        sqrt_transform = st.checkbox("Square Root Transformation", value=True)
+        boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
+        yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
+
+    # Collect selected transformations
+    transformations_to_apply = []
+    if log_transform:
+        transformations_to_apply.append("Log")
+    if sqrt_transform:
+        transformations_to_apply.append("Square Root")
+    if boxcox_transform:
+        transformations_to_apply.append("Box-Cox")
+    if yeojohnson_transform:
+        transformations_to_apply.append("Yeo-Johnson")
+
+    # Store the selected transformations in the session state
+    st.session_state['transformations_to_apply'] = transformations_to_apply
+
+
 def analysis():
     st.title("TPP Analysis App")
 
@@ -461,22 +578,22 @@ def analysis():
             st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
             
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
-            
+
             if include_go_annotation:
-                # Display all fasta files from the fasta directory
-                fasta_directory = "fasta"
-                fasta_files = [file for file in os.listdir(fasta_directory) if file.endswith('.fasta')]
-                
-                # Create a dictionary mapping species names to file names
-                species_to_file = {}
-                for file in fasta_files:
-                    file_path = os.path.join(fasta_directory, file)
-                    species_name = extract_species_from_fasta(file_path)
-                    species_to_file[species_name] = file
+                # Connect to the database
+                conn = duckdb.connect('multi_proteome_go.duckdb')
+
+                # Get all species from the database
+                species = conn.execute("SELECT name FROM species").fetchall()
+                species_names = [s[0] for s in species]
 
                 # Use species names in the selectbox
-                selected_species = st.selectbox("Select species for GO annotation", list(species_to_file.keys()))
+                selected_species = st.selectbox("Select species for GO annotation", species_names)
+
+            select_normality_tests()
+
             
+
             # Start Analysis button
             if st.button("Start Analysis"):
                 # Process data
@@ -503,34 +620,29 @@ def analysis():
 
                 st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
 
+
                 if include_go_annotation:
                     with st.spinner("Adding GO annotations..."):
-                        # Load the selected proteome GO CSV
-                        fasta_name = species_to_file[selected_species]
-                        go_csv_name = fasta_name.replace('.fasta', '_go.csv')
-                        go_csv_path = os.path.join(fasta_directory, go_csv_name)
-                        go_data = pd.read_csv(go_csv_path)
+                        protein_ids = summary_table['protein'].tolist()
                         
-                        # Create a dictionary from the GO CSV for quick lookup
-                        go_dict = go_data.set_index('Protein ID').to_dict('index')
+                        # Get GO annotations from the database, now using selected_species
+                        annotations = get_go_annotations(conn, protein_ids, selected_species)
                         
-                        # Efficiently update the summary table with GO annotations for each protein
+                        # Update the summary table with GO annotations
                         for index, row in summary_table.iterrows():
-                            protein_id = row['protein'].split("|")[1]  # Adjust according to your data structure
-                            go_details = go_dict.get(protein_id)
-
-                            if go_details:
-                                # Check and assign each field individually
-                                summary_table.at[index, 'GO ID'] = go_details.get('GO ID', 'NA')
-                                summary_table.at[index, 'Function'] = go_details.get('Function', 'NA')
-                                summary_table.at[index, 'Link'] = go_details.get('Link', 'NA')
-                            else:
-                                # Assign 'NA' if no data found for the protein
-                                summary_table.at[index, 'GO ID'] = 'NA'
-                                summary_table.at[index, 'Function'] = 'NA'
-                                summary_table.at[index, 'Link'] = 'NA'
+                            protein_id = row['protein']
+                            annotation = annotations.get(protein_id, {'GO ID': ['NA'], 'Function': ['NA'], 'Link': 'NA'})
+                            summary_table.at[index, 'GO ID'] = ';'.join(annotation['GO ID'])
+                            summary_table.at[index, 'Function'] = ';'.join(annotation['Function'])
+                            summary_table.at[index, 'Link'] = annotation['Link']
 
                         st.write("GO annotations added to the summary table.")
+
+                    # Close the database connection
+                    conn.close()
+                
+                if 'transformations_to_apply' in st.session_state:
+                    perform_transformations_and_shapiro_test(summary_table, st.session_state['transformations_to_apply'])
 
                 start_time = time.time()
 
@@ -554,6 +666,7 @@ def analysis():
                 st.dataframe(summary_table)
 
                 plt.close('all')
+
 def main():
     st.set_page_config(
     page_title="TPP Solver",
