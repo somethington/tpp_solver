@@ -13,9 +13,11 @@ services:
     restart: unless-stopped
     command: /app/run_server.sh
     environment:
-      VIRTUAL_HOST: tppsolver.functional-metabolomics.com
+      #VIRTUAL_HOST: tppsolver.functional-metabolomics.com
+      VIRTUAL_HOST: tppsolver.gnps2.org
       VIRTUAL_PORT: 8501
-      LETSENCRYPT_HOST: tppsolver.functional-metabolomics.com
+      #LETSENCRYPT_HOST: tppsolver.functional-metabolomics.com
+      LETSENCRYPT_HOST: tppsolver.gnps2.org
       LETSENCRYPT_EMAIL: mwang87@gmail.com
 
 networks:
