@@ -159,8 +159,8 @@ def average_samples(sample_groups, filtered_data):
 
 # Fit curve and plot data for a single protein
 def process_protein(args):
-    protein, data_dict, markers, sizes, alphas, positions = args
-    fig, ax = plt.subplots(figsize=(10,6))
+    protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data = args
+    fig, ax = plt.subplots(figsize=(10, 6))
     summary_data = []
     
     try:
@@ -173,7 +173,12 @@ def process_protein(args):
                 temperatures = temperatures[index]
                 values = values[index]
 
-                values = [entry / values[0] for entry in values]
+                if normalize_data:
+                    # Get the index of the selected temperature point for normalization
+                    norm_index = np.where(temperatures == selected_temp)[0][0]
+
+                    # Normalize values to the selected temperature point
+                    values = [entry / values[norm_index] for entry in values]
 
                 valmax = max(values)
                 med = np.median(temperatures)
@@ -203,11 +208,11 @@ def process_protein(args):
                     'residuals': ','.join(map(str, (values - sigmoid(temperatures, *popt)))),
                 })
 
-        ax.set_xlabel('Temperature')                        
+        ax.set_xlabel('Temperature')
         ax.set_ylabel('Intensity')
         ax.set_title(f'Fitted Curve for {protein}')
         ax.legend()
-        
+
         return protein, fig, summary_data
     except RuntimeError as e:
         print(f"Error processing protein {protein}: {str(e)}")
@@ -215,20 +220,24 @@ def process_protein(args):
     except Exception as e:
         print(f"Unexpected error processing protein {protein}: {str(e)}")
         return None, None, None
-
+    
 # Fit curves and plot data for all proteins using multiprocessing
-def fit_and_plot(data_dict):
+def fit_and_plot(data_dict, selected_temp, normalize_data):
     all_proteins = set()
     for treatment in data_dict.values():
         all_proteins.update(treatment.keys())
-    
+
     markers = itertools.cycle(['o', 's'])
     sizes = itertools.cycle([50, 100])
     alphas = itertools.cycle([1.0, 0.5])
     positions = itertools.cycle(["left", "right"])
 
     pool = mp.Pool(processes=mp.cpu_count())
-    results = pool.map(process_protein, [(protein, data_dict, markers, sizes, alphas, positions) for protein in all_proteins])
+    
+    # Pass selected_temp and normalize_data to process_protein
+    results = pool.map(process_protein, 
+                       [(protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data) 
+                        for protein in all_proteins])
     pool.close()
     pool.join()
 
@@ -242,10 +251,8 @@ def fit_and_plot(data_dict):
                 figures[protein] = fig
                 all_summary_data.extend(summary_data)
 
-    # Create the summary table only if we have data
     if all_summary_data:
         summary_table = pd.DataFrame(all_summary_data)
-        # Ensure correct data types
         summary_table['protein'] = summary_table['protein'].astype(str)
         summary_table['treatment'] = summary_table['treatment'].astype(str)
         summary_table['melting point'] = summary_table['melting point'].astype(float)
@@ -576,7 +583,22 @@ def analysis():
             # Count rows to be dropped
             droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
             st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
-            
+            # Checkbox for normalization
+            normalize_data = st.checkbox("Normalize", value=True)
+
+            if normalize_data:
+                # Clean temperature data to remove duplicates and sort them
+                unique_temperatures = sorted(set(metadata['Temperature']))
+
+                # Allow user to select the temperature point for normalization
+                selected_temp = st.selectbox(
+                    "Select the temperature to which data should be normalized:",
+                    options=unique_temperatures
+                )
+
+            else:
+                selected_temp = None  # No normalization
+
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
             if include_go_annotation:
@@ -614,7 +636,7 @@ def analysis():
 
                 start_time = time.time()
                 with st.spinner("Fitting curves and generating plots..."):
-                    figures, summary_table = fit_and_plot(average_dict)
+                  figures, summary_table = fit_and_plot(average_dict, selected_temp, normalize_data)
                 end_time = time.time()
                 figure_generation_time = end_time - start_time
 
