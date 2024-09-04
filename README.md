@@ -107,5 +107,3 @@ Ensure your metadata CSV file follows this format for the application to process
 ## Contact
 
 Lukas Dolidze - [ldoli002@ucr.edu](mailto:ldoli002@ucr.edu?subject=TPP%20Curve%20Fitting%20App)
-
-App URL: https://tppsolver.streamlit.app

@@ -8,3 +8,4 @@ biopython
 duckdb
 scipy
 requests
+
