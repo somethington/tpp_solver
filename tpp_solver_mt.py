@@ -234,6 +234,7 @@ def fit_and_plot(data_dict, selected_temp, normalize_data):
 
     pool = mp.Pool(processes=mp.cpu_count())
     
+    # Pass selected_temp and normalize_data to process_protein
     results = pool.map(process_protein, 
                        [(protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data) 
                         for protein in all_proteins])
@@ -594,6 +595,7 @@ def analysis():
                     "Select the temperature to which data should be normalized:",
                     options=unique_temperatures
                 )
+
             else:
                 selected_temp = None  # No normalization
 
@@ -634,7 +636,7 @@ def analysis():
 
                 start_time = time.time()
                 with st.spinner("Fitting curves and generating plots..."):
-                    figures, summary_table = fit_and_plot(average_dict, selected_temp)
+                  figures, summary_table = fit_and_plot(average_dict, selected_temp, normalize_data)
                 end_time = time.time()
                 figure_generation_time = end_time - start_time
 
