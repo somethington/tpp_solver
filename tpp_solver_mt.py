@@ -12,7 +12,7 @@ import duckdb
 from scipy.optimize import curve_fit
 from scipy.stats import shapiro, boxcox, yeojohnson
 import seaborn as sns
-from readme_content import  display_readme
+from readme_content import display_readme
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -32,13 +32,8 @@ def paper_sigmoidal(T, A1, A2, Tm):
 
 # Extract sample information from CSV
 def extract_samples(csv_data):
-    # Filter out unnamed columns
     named_columns = [col for col in csv_data.columns if not col.startswith('Unnamed:')]
-
-    # Define the required categories
     categories = ["Temperature", "Treatment", "Samples"]
-
-    # Create a dictionary to store the selected columns for each category
     selected_columns = {}
 
     for category in categories:
@@ -147,7 +142,6 @@ def average_samples(sample_groups, filtered_data):
         for sample in sample_groups[treatment]:
             for _, row in filtered_data.iterrows():
                 protein_id = row['Protein ID']
-
                 sample_vals = row[sample[1]]
                 average_val = np.mean(sample_vals)
 
@@ -174,10 +168,7 @@ def process_protein(args):
                 values = values[index]
 
                 if normalize_data:
-                    # Get the index of the selected temperature point for normalization
                     norm_index = np.where(temperatures == selected_temp)[0][0]
-
-                    # Normalize values to the selected temperature point
                     values = [entry / values[norm_index] for entry in values]
 
                 valmax = max(values)
@@ -189,14 +180,14 @@ def process_protein(args):
                 alpha = next(alphas)
                 curpos = next(positions)
 
-                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} Curve')
+                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} measured')
 
                 popt, _ = curve_fit(sigmoid, temperatures, values, p0=[valmax, med, minval])
 
                 melt_pt = sigmoid(popt[1], *popt)
 
                 temp_range = np.linspace(temperatures.min(), temperatures.max(), 100)
-                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} Fitted')
+                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} fitted')
 
                 ax.scatter(popt[1], melt_pt, color='red', s=75, marker='^')
                 ax.text(popt[1], melt_pt, f'{popt[1]:.2f}', color='red', horizontalalignment=curpos, verticalalignment='bottom')
@@ -234,7 +225,6 @@ def fit_and_plot(data_dict, selected_temp, normalize_data):
 
     pool = mp.Pool(processes=mp.cpu_count())
     
-    # Pass selected_temp and normalize_data to process_protein
     results = pool.map(process_protein, 
                        [(protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data) 
                         for protein in all_proteins])
@@ -335,8 +325,6 @@ def get_go_annotations(conn, protein_ids, species_name):
 def extract_species_from_fasta(file_path):
     with open(file_path, 'r') as file:
         first_line = file.readline().strip()
-        # Extract species name from the header
-        # Example: >sp|A5A612|YMGJ_ECOLI Uncharacterized protein YmgJ OS=Escherichia coli (strain K12) OX=83333 GN=ymgJ PE=4 SV=1
         species_start = first_line.find("OS=") + 3
         species_end = first_line.find(" OX=", species_start)
         return first_line[species_start:species_end]
@@ -351,7 +339,7 @@ def go_annotation():
     if protein_csv is not None:
         protein_data = pd.read_csv(protein_csv)
         st.write("Preview of uploaded data:")
-        st.dataframe(protein_data.head())  # Show preview of the first few rows
+        st.dataframe(protein_data.head())
 
         protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
 
@@ -374,11 +362,9 @@ def go_annotation():
                     lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
                 )
 
-                # Display the updated CSV with annotations
                 st.subheader("Updated CSV Data with GO Annotations")
                 st.dataframe(protein_data)
 
-                # Provide download option for the updated CSV
                 csv = protein_data.to_csv(index=False)
                 st.download_button(
                     label="Download Annotated CSV",
@@ -389,18 +375,14 @@ def go_annotation():
         else:
             st.warning("Please select a column containing Protein IDs.")
 
-    # Close the database connection
     conn.close()
     
 def perform_transformations_and_shapiro_test(summary_table, transformations_to_apply):
-    # Pivot the summary table to get the ΔTm values
     df_pivot = summary_table.pivot(index='protein', columns='treatment', values='melting point')
     df_pivot['ΔTm'] = df_pivot.iloc[:, 0] - df_pivot.iloc[:, 1]
     delta_tm = df_pivot['ΔTm'].dropna()
 
-    transformations = {
-        'Original ΔTm': delta_tm
-    }
+    transformations = {'Original ΔTm': delta_tm}
     
     if 'Log' in transformations_to_apply:
         transformations['Log(ΔTm + 1)'] = np.log1p(delta_tm)
@@ -417,18 +399,15 @@ def perform_transformations_and_shapiro_test(summary_table, transformations_to_a
     results = {}
     
     for name, transformed_data in transformations.items():
-        # Ensure transformed data is in a pandas Series to handle dropna() correctly
         transformed_data = transformed_data.dropna()
         
         if len(transformed_data) == 0:
             st.warning(f"No valid data available for {name} after transformation.")
             continue
         
-        # Perform Shapiro-Wilk test
         stat, p_value = shapiro(transformed_data)
         results[name] = (stat, p_value)
         
-        # Display results
         st.subheader(f"Shapiro-Wilk Test for {name}")
         st.write(f"Shapiro-Wilk Test Statistic: {stat}")
         st.write(f"P-value: {p_value}")
@@ -438,9 +417,8 @@ def perform_transformations_and_shapiro_test(summary_table, transformations_to_a
         else:
             st.write(f"The data is not normally distributed after {name} (reject H0).")
         
-        # Plot the distribution of transformed ΔTm
         st.subheader(f"Distribution of {name}")
-        plt.figure(figsize=(6, 4))  # Further reduced the figure size here
+        plt.figure(figsize=(6, 4))  
         sns.histplot(transformed_data, kde=True, bins=30)
         plt.title(f"Distribution of {name}")
         plt.xlabel(name)
@@ -458,7 +436,6 @@ def select_normality_tests():
         boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
         yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
 
-    # Collect selected transformations
     transformations_to_apply = []
     if log_transform:
         transformations_to_apply.append("Log")
@@ -469,14 +446,11 @@ def select_normality_tests():
     if yeojohnson_transform:
         transformations_to_apply.append("Yeo-Johnson")
 
-    # Store the selected transformations in the session state
     st.session_state['transformations_to_apply'] = transformations_to_apply
-
 
 def analysis():
     st.title("TPP Analysis App")
 
-    # Initialize session state variables
     if 'tsv_data' not in st.session_state:
         st.session_state.tsv_data = None
     if 'csv_data' not in st.session_state:
@@ -486,14 +460,11 @@ def analysis():
     if 'edit_mode_csv' not in st.session_state:
         st.session_state.edit_mode_csv = False
 
-    # File uploaders
     uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
     uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
 
-    # Create a row with three columns for the buttons
     col1, col2, col3 = st.columns(3)
 
-    # Button to load uploaded data
     with col1:
         if st.button('Load uploaded data'):
             if uploaded_tsv is not None and uploaded_csv is not None:
@@ -503,7 +474,6 @@ def analysis():
             else:
                 st.warning("Please upload both TSV and CSV files before loading.")
 
-    # Button to load sample data
     with col2:
         if st.button('Load sample data', help=sample_help):
             data_path = os.path.dirname(os.path.abspath(__file__))
@@ -513,7 +483,6 @@ def analysis():
             st.session_state.csv_data = read_csv_file(csv_path)
             st.success("Sample data loaded successfully!")
 
-    # Button to clear loaded data
     with col3:
         if st.button('Clear loaded data'):
             st.session_state.tsv_data = None
@@ -522,13 +491,11 @@ def analysis():
             st.session_state.edit_mode_csv = False
             st.success("All loaded data has been cleared!")
 
-    # Display data status
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.info("TSV and CSV data are loaded and ready for analysis.")
     else:
         st.warning("Please load both TSV and CSV data to proceed with analysis.")
 
-    # Display and edit TSV data
     if st.session_state.tsv_data is not None:
         with st.expander("TSV Data", expanded=True):
             col1, col2 = st.columns([3, 1])
@@ -548,7 +515,6 @@ def analysis():
             else:
                 st.dataframe(st.session_state.tsv_data)
 
-    # Display and edit CSV data
     if st.session_state.csv_data is not None:
         with st.expander("CSV Metadata", expanded=True):
             col1, col2 = st.columns([3, 1])
@@ -571,58 +537,38 @@ def analysis():
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.subheader("Analysis Setup")
 
-        # Extract sample information from CSV
         metadata = extract_samples(st.session_state.csv_data)
 
         if metadata is None:
             st.error("Failed to extract samples from metadata. Please check your CSV file.")
         else:
-            # Set maximum number of zeros allowed
             max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
-
-            # Count rows to be dropped
             droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
             st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
-            # Checkbox for normalization
+
             normalize_data = st.checkbox("Normalize", value=True)
 
             if normalize_data:
-                # Clean temperature data to remove duplicates and sort them
                 unique_temperatures = sorted(set(metadata['Temperature']))
-
-                # Allow user to select the temperature point for normalization
-                selected_temp = st.selectbox(
-                    "Select the temperature to which data should be normalized:",
-                    options=unique_temperatures
-                )
+                selected_temp = st.selectbox("Select the temperature to which data should be normalized:", options=unique_temperatures)
 
             else:
-                selected_temp = None  # No normalization
+                selected_temp = None 
 
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
             if include_go_annotation:
-                # Connect to the database
                 conn = duckdb.connect('multi_proteome_go.duckdb')
-
-                # Get all species from the database
                 species = conn.execute("SELECT name FROM species").fetchall()
                 species_names = [s[0] for s in species]
-
-                # Use species names in the selectbox
                 selected_species = st.selectbox("Select species for GO annotation", species_names)
 
             select_normality_tests()
 
-            
-
-            # Start Analysis button
             if st.button("Start Analysis"):
-                # Process data
                 tsv_data = st.session_state.tsv_data
                 csv_data = st.session_state.csv_data
 
-                # Generate and display results
                 filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
 
                 st.subheader("Analysis Results")
@@ -642,15 +588,11 @@ def analysis():
 
                 st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
 
-
                 if include_go_annotation:
                     with st.spinner("Adding GO annotations..."):
                         protein_ids = summary_table['protein'].tolist()
-                        
-                        # Get GO annotations from the database, now using selected_species
                         annotations = get_go_annotations(conn, protein_ids, selected_species)
                         
-                        # Update the summary table with GO annotations
                         for index, row in summary_table.iterrows():
                             protein_id = row['protein']
                             annotation = annotations.get(protein_id, {'GO ID': ['NA'], 'Function': ['NA'], 'Link': 'NA'})
@@ -660,7 +602,6 @@ def analysis():
 
                         st.write("GO annotations added to the summary table.")
 
-                    # Close the database connection
                     conn.close()
                 
                 if 'transformations_to_apply' in st.session_state:
@@ -675,7 +616,6 @@ def analysis():
 
                 st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
 
-                # Provide download option for results
                 st.download_button(
                     label="Download zipped SVGs",
                     data=zip_file,
@@ -683,7 +623,6 @@ def analysis():
                     mime="application/zip"
                 )
 
-                # Display summary table
                 st.subheader("Summary Table")
                 st.dataframe(summary_table)
 
@@ -691,13 +630,11 @@ def analysis():
 
 def main():
     st.set_page_config(
-    page_title="TPP Solver",
-    page_icon="logo_32x32.png",  
-    layout="wide",
-)
+        page_title="TPP Solver",
+        page_icon="logo_32x32.png",  
+        layout="wide",
+    )
     st.sidebar.title("Navigation")
-    #
-    # Sidebar navigation
     page = st.sidebar.radio("Go to", ["Main App", 'GO Annotation', "README"])
 
     if page == "README":
