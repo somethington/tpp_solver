@@ -786,6 +786,8 @@ def analysis():
                     if perform_shapiro:
                         st.session_state.transformations_to_apply = transformations_to_apply
                     st.success("Shapiro-Wilk Test settings applied successfully!")
+                    
+            visualize_go_ids = False
 
             with st.expander("Data Visualization Options"):
                 show_distribution = st.checkbox("Show Distribution of Melting Points", value=False)
