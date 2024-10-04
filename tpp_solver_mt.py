@@ -736,7 +736,7 @@ def analysis():
             st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
 
             normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
-
+            
             if normalize_data:
                 unique_temperatures = sorted(set(metadata['Temperature']))
                 selected_temp = st.selectbox(
@@ -744,13 +744,17 @@ def analysis():
                     options=unique_temperatures,
                     index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) if st.session_state.get('selected_temp') in unique_temperatures else 0
                 )
+
             else:
                 selected_temp = None
+
+            if selected_temp is None and normalize_data:
+                st.warning("Please select a temperature for normalization.")
 
             if st.button("Apply normalization Settings"):
                 st.session_state.normalize_data = normalize_data
                 st.session_state.selected_temp = selected_temp
-                st.success("Normalize settings applied successfully!")
+                st.success("Normalization settings applied successfully!")
 
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
@@ -786,7 +790,7 @@ def analysis():
                     if perform_shapiro:
                         st.session_state.transformations_to_apply = transformations_to_apply
                     st.success("Shapiro-Wilk Test settings applied successfully!")
-                    
+
             visualize_go_ids = False
 
             with st.expander("Data Visualization Options"):
@@ -797,8 +801,6 @@ def analysis():
                     if visualize_go_ids:
                         threshold = st.number_input("ΔTm threshold for GO ID visualization", min_value=0.0, value=4.0, step=0.1)
                     
-
-
             if st.button("Start Analysis"):
                 tsv_data = st.session_state.tsv_data
                 csv_data = st.session_state.csv_data
