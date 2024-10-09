@@ -1,7 +1,7 @@
 import io
 import os
 import time
-import zipfile 
+import zipfile
 import itertools
 import numpy as np
 import pandas as pd
@@ -10,9 +10,11 @@ import multiprocessing as mp
 import matplotlib.pyplot as plt
 import duckdb
 from scipy.optimize import curve_fit
-from scipy.stats import shapiro, boxcox, yeojohnson
+from scipy.stats import shapiro, boxcox, yeojohnson, gaussian_kde
 import seaborn as sns
-from readme_content import  display_readme
+from readme_content import display_readme
+import plotly.graph_objects as go
+import plotly.express as px
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -28,17 +30,12 @@ def sigmoid(T, a, b, plateau):
 def paper_sigmoidal(T, A1, A2, Tm):
     return A2 + (A1 - A2) / (1 + np.exp((T - Tm)))
 
-### Data extraction and processing functions
+# Data extraction and processing functions
 
 # Extract sample information from CSV
 def extract_samples(csv_data):
-    # Filter out unnamed columns
     named_columns = [col for col in csv_data.columns if not col.startswith('Unnamed:')]
-
-    # Define the required categories
     categories = ["Temperature", "Treatment", "Samples"]
-
-    # Create a dictionary to store the selected columns for each category
     selected_columns = {}
 
     for category in categories:
@@ -147,7 +144,6 @@ def average_samples(sample_groups, filtered_data):
         for sample in sample_groups[treatment]:
             for _, row in filtered_data.iterrows():
                 protein_id = row['Protein ID']
-
                 sample_vals = row[sample[1]]
                 average_val = np.mean(sample_vals)
 
@@ -158,12 +154,15 @@ def average_samples(sample_groups, filtered_data):
     return averaged_data
 
 # Fit curve and plot data for a single protein
+# Fit curve and plot data for a single protein
+# Fit curve and plot data for a single protein
 def process_protein(args):
     protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data = args
     fig, ax = plt.subplots(figsize=(10, 6))
     summary_data = []
     
     try:
+        y_offset = 0.0  # Initial y offset for R^2 labels
         for treatment, proteins in data_dict.items():
             if protein in proteins:
                 temperatures = np.array(list(proteins[protein].keys()))
@@ -174,10 +173,7 @@ def process_protein(args):
                 values = values[index]
 
                 if normalize_data:
-                    # Get the index of the selected temperature point for normalization
                     norm_index = np.where(temperatures == selected_temp)[0][0]
-
-                    # Normalize values to the selected temperature point
                     values = [entry / values[norm_index] for entry in values]
 
                 valmax = max(values)
@@ -189,23 +185,42 @@ def process_protein(args):
                 alpha = next(alphas)
                 curpos = next(positions)
 
-                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} Curve')
+                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} measured')
 
                 popt, _ = curve_fit(sigmoid, temperatures, values, p0=[valmax, med, minval])
+
+                # Predicted values using the fitted sigmoid curve
+                fitted_values = sigmoid(temperatures, *popt)
+
+                # Residuals and total sum of squares
+                ss_res = np.sum((values - fitted_values) ** 2)
+                ss_tot = np.sum((values - np.mean(values)) ** 2)
+
+                # R^2 calculation
+                r_squared = 1 - (ss_res / ss_tot)
 
                 melt_pt = sigmoid(popt[1], *popt)
 
                 temp_range = np.linspace(temperatures.min(), temperatures.max(), 100)
-                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} Fitted')
+                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} fitted')
 
                 ax.scatter(popt[1], melt_pt, color='red', s=75, marker='^')
                 ax.text(popt[1], melt_pt, f'{popt[1]:.2f}', color='red', horizontalalignment=curpos, verticalalignment='bottom')
+
+                # Add R^2 value to the plot with a slight vertical offset
+                ax.text(0.05, 0.95 - y_offset, f'R^2 ({treatment}) = {r_squared:.2f}', 
+                        transform=ax.transAxes, fontsize=12, verticalalignment='top', 
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
+
+                # Update the y_offset to prevent overlap of R^2 labels
+                y_offset += 0.07
 
                 summary_data.append({
                     'protein': protein,
                     'treatment': treatment,
                     'melting point': popt[1],
-                    'residuals': ','.join(map(str, (values - sigmoid(temperatures, *popt)))),
+                    'R^2': r_squared,
+                    'residuals': ','.join(map(str, (values - fitted_values))),
                 })
 
         ax.set_xlabel('Temperature')
@@ -220,7 +235,6 @@ def process_protein(args):
     except Exception as e:
         print(f"Unexpected error processing protein {protein}: {str(e)}")
         return None, None, None
-    
 # Fit curves and plot data for all proteins using multiprocessing
 def fit_and_plot(data_dict, selected_temp, normalize_data):
     all_proteins = set()
@@ -234,9 +248,8 @@ def fit_and_plot(data_dict, selected_temp, normalize_data):
 
     pool = mp.Pool(processes=mp.cpu_count())
     
-    # Pass selected_temp and normalize_data to process_protein
     results = pool.map(process_protein, 
-                       [(protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data) 
+                       [(protein, data_dict, iter(markers), iter(sizes), iter(alphas), iter(positions), selected_temp, normalize_data) 
                         for protein in all_proteins])
     pool.close()
     pool.join()
@@ -262,21 +275,15 @@ def fit_and_plot(data_dict, selected_temp, normalize_data):
 
     return figures, summary_table
 
-# Save a single figure as SVG
-def save_figure_as_svg(args):
-    protein, fig = args
-    svg_io = io.BytesIO()
-    fig.savefig(svg_io, format='svg', bbox_inches='tight')
-    svg_io.seek(0) 
-    plt.close(fig)
-    return (f"{protein}.svg", svg_io.getvalue())
-
 # Save all figures as SVGs and create a zip file
 def save_as_svg(figures, dataframe):
-    pool = mp.Pool(processes=mp.cpu_count())
-    memory_files = pool.map(save_figure_as_svg, figures.items())
-    pool.close()
-    pool.join()
+    memory_files = []
+    for protein, fig in figures.items():
+        svg_io = io.BytesIO()
+        fig.savefig(svg_io, format='svg', bbox_inches='tight')
+        svg_io.seek(0)
+        plt.close(fig)
+        memory_files.append((f"{protein}.svg", svg_io.getvalue()))
 
     csv_io = io.BytesIO()
     dataframe.to_csv(csv_io, index=False)
@@ -290,58 +297,223 @@ def save_as_svg(figures, dataframe):
 
     return zip_io.getvalue()
 
-sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
+def calculate_bin_width(data):
+    data = data.dropna()  # Remove NaN values
+    q25, q75 = np.percentile(data, [25, 75])  # Calculate the 25th and 75th percentiles
+    iqr = q75 - q25  # Interquartile range
+    bin_width = 2 * iqr * len(data) ** (-1/3)  # Freedman-Diaconis rule
+    bin_width = max(bin_width, 1e-3)  # Ensure bin width is not too small
+    bins = int(np.ceil((data.max() - data.min()) / bin_width))  # Number of bins
+    return max(bins, 10)  # Ensure at least 10 bins
 
-def add_go_annotations(csv_data, protein_id_column, selected_species, conn):
-    protein_ids = csv_data[protein_id_column].astype(str).tolist()
+def perform_transformations_and_shapiro_test(summary_table, transformations_to_apply):
+    # Pivot the summary table for protein melting point differences (ΔTm)
+    df_pivot = summary_table.pivot(index='protein', columns='treatment', values='melting point')
+    df_pivot['ΔTm'] = df_pivot.iloc[:, 0] - df_pivot.iloc[:, 1]
+    delta_tm = df_pivot['ΔTm'].dropna()  # Drop NaN values
+
+    # Dictionary to store different transformations
+    transformations = {'Original ΔTm': delta_tm}
+
+    # Apply Log(ΔTm + 1) transformation, ensuring only non-negative values
+    if 'Log' in transformations_to_apply:
+        delta_tm = delta_tm  # Ensure non-negative values for log
+        if len(delta_tm) > 0:
+            transformations['Log(ΔTm + 1)'] = np.log1p(delta_tm)
+        else:
+            st.warning("No valid non-negative data for Log(ΔTm + 1) transformation.")
+
+    # Apply Square Root transformation, ensuring only non-negative values
+    if 'Square Root' in transformations_to_apply:
+        delta_tm = delta_tm
+        if len(delta_tm) > 0:
+            transformations['Square Root of ΔTm'] = np.sqrt(delta_tm)
+        else:
+            st.warning("No valid non-negative data for Square Root transformation.")
+
+    # Apply Box-Cox transformation, ensuring all positive values
+    if 'Box-Cox' in transformations_to_apply:
+        if (delta_tm > 0).all():  # Box-Cox requires positive values
+            transformations['Box-Cox ΔTm'] = pd.Series(boxcox(delta_tm)[0], index=delta_tm.index)
+        else:
+            # Apply Box-Cox with a shift to handle non-positive values
+            shifted_delta_tm = delta_tm - delta_tm.min() + 1
+            transformations['Box-Cox ΔTm (Shifted)'] = pd.Series(boxcox(shifted_delta_tm)[0], index=delta_tm.index)
+
+    # Apply Yeo-Johnson transformation, which handles both positive and negative values
+    if 'Yeo-Johnson' in transformations_to_apply:
+        transformations['Yeo-Johnson ΔTm'] = pd.Series(yeojohnson(delta_tm)[0], index=delta_tm.index)
+
+    # Dictionary to store Shapiro-Wilk test results
+    results = {}
     
-    # Get GO annotations from the database
-    annotations = get_go_annotations(conn, protein_ids, selected_species)
+    # Perform Shapiro-Wilk test and plot the distribution for each transformation
+    for name, transformed_data in transformations.items():
+        transformed_data = transformed_data.dropna()  # Drop NaN values
+        
+        if len(transformed_data) == 0:
+            st.warning(f"No valid data available for {name} after transformation.")
+            continue
+        
+        # Perform Shapiro-Wilk test
+        stat, p_value = shapiro(transformed_data)
+        results[name] = (stat, p_value)
+        
+        st.subheader(f"Shapiro-Wilk Test for {name}")
+        st.write(f"Shapiro-Wilk Test Statistic: {stat}")
+        st.write(f"P-value: {p_value}")
+        
+        if p_value > 0.05:
+            st.write(f"The data is normally distributed after {name} (fail to reject H0).")
+        else:
+            st.write(f"The data is not normally distributed after {name} (reject H0).")
+        
+        # Plot the distribution of the transformed data
+        st.subheader(f"Distribution of {name}")
+        plt.figure(figsize=(6, 4))  
+        sns.histplot(transformed_data, kde=True, bins=30)
+        plt.title(f"Distribution of {name}")
+        plt.xlabel(name)
+        plt.ylabel("Frequency")
+        plt.grid(True)
+        st.pyplot(plt)
+        plt.close()
     
-    # Add GO annotations directly to the CSV data
-    csv_data['GO ID'] = csv_data[protein_id_column].apply(
-        lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+    return results
+
+def plot_melting_point_distribution(summary_table):
+    st.subheader("Distribution of Melting Points")
+
+    data = summary_table['melting point']
+    data = data.dropna()
+    data = data[(data >= 0) & (data <= 100)]  # Filter data within 0-100°C
+
+    if data.empty:
+        st.error("No melting point data available for plotting.")
+        return
+
+    bins = calculate_bin_width(data)
+
+    # Create histogram with counts (frequency)
+    hist = go.Histogram(
+        x=data,
+        nbinsx=bins,
+        marker=dict(color='lightblue', line=dict(color='black', width=1)),
+        opacity=0.7,
+        name='Histogram'
     )
-    csv_data['Function'] = csv_data[protein_id_column].apply(
-        lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+
+    # Compute density curve
+    kde_x = np.linspace(data.min(), data.max(), 200)
+    kde = gaussian_kde(data)
+    kde_y = kde(kde_x)
+
+    # Scale density curve to match histogram counts
+    bin_width = (data.max() - data.min()) / bins
+    scaled_kde_y = kde_y * len(data) * bin_width
+
+    density_curve = go.Scatter(
+        x=kde_x,
+        y=scaled_kde_y,
+        mode='lines',
+        line=dict(color='darkblue', width=2),
+        name='Density Curve'
     )
-    csv_data['Link'] = csv_data[protein_id_column].apply(
-        lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+
+    # Combine the histogram and density curve
+    fig = go.Figure(data=[hist, density_curve])
+
+    fig.update_layout(
+        title="Overall Distribution of Melting Points",
+        xaxis_title="Melting Point (°C)",
+        yaxis_title="Frequency",
+        template='plotly_white',
+        bargap=0.1,
+        legend=dict(x=0.7, y=0.95)
     )
 
-    return csv_data
+    st.plotly_chart(fig)
 
-def get_go_annotations(conn, protein_ids, species_name):
-    query = """
-    SELECT p.id AS protein_id, g.id AS go_id, g.function, p.link
-    FROM proteins p
-    JOIN protein_go_terms pgt ON p.id = pgt.protein_id
-    JOIN go_terms g ON pgt.go_term_id = g.id
-    JOIN species s ON p.species_id = s.id
-    WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
-    """
-    result = conn.execute(query, [protein_ids, species_name]).fetchall()
-    
-    annotations = {}
-    for row in result:
-        protein_id, go_id, function, link = row
-        if protein_id not in annotations:
-            annotations[protein_id] = {'GO ID': [], 'Function': [], 'Link': link}
-        annotations[protein_id]['GO ID'].append(go_id)
-        annotations[protein_id]['Function'].append(function)
-    
-    return annotations
+def compare_melting_points_violin(summary_table):
+    st.subheader("Comparison of Melting Points Between Treatments (Interactive Violin Plot with Jittered Strip Plot)")
 
-def extract_species_from_fasta(file_path):
-    with open(file_path, 'r') as file:
-        first_line = file.readline().strip()
-        # Extract species name from the header
-        # Example: >sp|A5A612|YMGJ_ECOLI Uncharacterized protein YmgJ OS=Escherichia coli (strain K12) OX=83333 GN=ymgJ PE=4 SV=1
-        species_start = first_line.find("OS=") + 3
-        species_end = first_line.find(" OX=", species_start)
-        return first_line[species_start:species_end]
+    # Ensure 'melting point' and 'treatment' columns exist
+    if 'melting point' not in summary_table.columns or 'treatment' not in summary_table.columns:
+        st.error("The summary table must contain 'melting point' and 'treatment' columns.")
+        return
 
-def go_annotation():
+    # Prepare data
+    data = summary_table[['melting point', 'treatment']].dropna()
+    # Limit melting points to values between 0 and 100
+    data = data[(data['melting point'] >= 0) & (data['melting point'] <= 100)]
+
+    # Assign colors to treatments
+    treatments = data['treatment'].unique()
+    colors = px.colors.qualitative.Plotly  # Choose a color palette
+    color_map = dict(zip(treatments, colors))
+
+    # Map treatments to numerical x-values
+    treatment_to_num = {treatment: idx for idx, treatment in enumerate(treatments)}
+
+    # Create violin plots
+    fig = go.Figure()
+
+    for treatment in treatments:
+        treatment_data = data[data['treatment'] == treatment]['melting point']
+        violin_color = color_map[treatment]
+        treatment_num = treatment_to_num[treatment]
+
+        # Add violin plot for each treatment
+        fig.add_trace(go.Violin(
+            y=treatment_data,
+            x=[treatment_num] * len(treatment_data),
+            name=f"{treatment} Violin",
+            box_visible=True,
+            meanline_visible=True,
+            opacity=0.6,
+            hoverinfo='y',
+            width=0.6,
+            points=False,  # We will add jittered scatter plot separately
+            line_color='black',
+            fillcolor=violin_color,
+            showlegend=True
+        ))
+
+        # Add jittered scatter plot (strip plot) for each treatment
+        jitter_strength = 0.05  # Adjust the jitter strength as needed
+        jittered_x = treatment_num + np.random.uniform(-jitter_strength, jitter_strength, size=len(treatment_data))
+
+        fig.add_trace(go.Scatter(
+            y=treatment_data,
+            x=jittered_x,
+            mode='markers',
+            name=f"{treatment} Points",
+            marker=dict(color='black', size=6, opacity=0.8),
+            hoverinfo='y',
+            showlegend=True  # Show legend for points
+        ))
+
+    # Update layout
+    fig.update_layout(
+        title="Melting Point Comparison Across Treatments",
+        xaxis_title="Treatment",
+        yaxis_title="Melting Point (°C)",
+        template='plotly_white',
+        violingap=0.5,
+        violingroupgap=0,
+        violinmode='overlay',  # Adjust to 'group' if you prefer side-by-side violins
+        width=800,
+        height=600,
+        xaxis=dict(
+            tickmode='array',
+            tickvals=list(treatment_to_num.values()),
+            ticktext=list(treatment_to_num.keys())
+        )
+    )
+
+    st.plotly_chart(fig)
+
+def go_annotation():   
     st.title("GO Annotation Tool")
 
     conn = duckdb.connect('multi_proteome_go.duckdb')
@@ -351,7 +523,7 @@ def go_annotation():
     if protein_csv is not None:
         protein_data = pd.read_csv(protein_csv)
         st.write("Preview of uploaded data:")
-        st.dataframe(protein_data.head())  # Show preview of the first few rows
+        st.dataframe(protein_data.head())
 
         protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
 
@@ -374,11 +546,9 @@ def go_annotation():
                     lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
                 )
 
-                # Display the updated CSV with annotations
                 st.subheader("Updated CSV Data with GO Annotations")
                 st.dataframe(protein_data)
 
-                # Provide download option for the updated CSV
                 csv = protein_data.to_csv(index=False)
                 st.download_button(
                     label="Download Annotated CSV",
@@ -389,94 +559,78 @@ def go_annotation():
         else:
             st.warning("Please select a column containing Protein IDs.")
 
-    # Close the database connection
     conn.close()
+
+def get_go_annotations(conn, protein_ids, species_name):
+    query = """
+    SELECT p.id AS protein_id, g.id AS go_id, g.function, p.link
+    FROM proteins p
+    JOIN protein_go_terms pgt ON p.id = pgt.protein_id
+    JOIN go_terms g ON pgt.go_term_id = g.id
+    JOIN species s ON p.species_id = s.id
+    WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
+    """
+    result = conn.execute(query, [protein_ids, species_name]).fetchall()
     
-def perform_transformations_and_shapiro_test(summary_table, transformations_to_apply):
-    # Pivot the summary table to get the ΔTm values
-    df_pivot = summary_table.pivot(index='protein', columns='treatment', values='melting point')
-    df_pivot['ΔTm'] = df_pivot.iloc[:, 0] - df_pivot.iloc[:, 1]
-    delta_tm = df_pivot['ΔTm'].dropna()
-
-    transformations = {
-        'Original ΔTm': delta_tm
-    }
+    annotations = {}
+    for row in result:
+        protein_id, go_id, function, link = row
+        if protein_id not in annotations:
+            annotations[protein_id] = {'GO ID': [], 'Function': [], 'Link': link}
+        annotations[protein_id]['GO ID'].append(go_id)
+        annotations[protein_id]['Function'].append(function)
     
-    if 'Log' in transformations_to_apply:
-        transformations['Log(ΔTm + 1)'] = np.log1p(delta_tm)
-    if 'Square Root' in transformations_to_apply:
-        transformations['Square Root of ΔTm'] = np.sqrt(delta_tm)
-    if 'Box-Cox' in transformations_to_apply:
-        if (delta_tm > 0).all():
-            transformations['Box-Cox ΔTm'] = pd.Series(boxcox(delta_tm)[0], index=delta_tm.index)
-        else:
-            transformations['Box-Cox ΔTm (Shifted)'] = pd.Series(boxcox(delta_tm - delta_tm.min() + 1)[0], index=delta_tm.index)
-    if 'Yeo-Johnson' in transformations_to_apply:
-        transformations['Yeo-Johnson ΔTm'] = pd.Series(yeojohnson(delta_tm)[0], index=delta_tm.index)
+    return annotations
 
-    results = {}
+def visualize_go_ids_with_dtm(summary_table, threshold):
+    treatments = summary_table['treatment'].unique()
     
-    for name, transformed_data in transformations.items():
-        # Ensure transformed data is in a pandas Series to handle dropna() correctly
-        transformed_data = transformed_data.dropna()
-        
-        if len(transformed_data) == 0:
-            st.warning(f"No valid data available for {name} after transformation.")
-            continue
-        
-        # Perform Shapiro-Wilk test
-        stat, p_value = shapiro(transformed_data)
-        results[name] = (stat, p_value)
-        
-        # Display results
-        st.subheader(f"Shapiro-Wilk Test for {name}")
-        st.write(f"Shapiro-Wilk Test Statistic: {stat}")
-        st.write(f"P-value: {p_value}")
-        
-        if p_value > 0.05:
-            st.write(f"The data is normally distributed after {name} (fail to reject H0).")
-        else:
-            st.write(f"The data is not normally distributed after {name} (reject H0).")
-        
-        # Plot the distribution of transformed ΔTm
-        st.subheader(f"Distribution of {name}")
-        plt.figure(figsize=(6, 4))  # Further reduced the figure size here
-        sns.histplot(transformed_data, kde=True, bins=30)
-        plt.title(f"Distribution of {name}")
-        plt.xlabel(name)
-        plt.ylabel("Frequency")
-        plt.grid(True)
-        st.pyplot(plt)
+    if len(treatments) < 2:
+        st.error("There must be at least two treatments to calculate ΔTm.")
+        return
+
+    treatment_1 = treatments[0]
+    treatment_2 = treatments[1]
+
+    pivot_table = summary_table.pivot(index='protein', columns='treatment', values='melting point')
+
+    if treatment_1 in pivot_table.columns and treatment_2 in pivot_table.columns:
+        pivot_table['ΔTm'] = pivot_table[treatment_1] - pivot_table[treatment_2]
+    else:
+        st.error(f"The selected treatments {treatment_1} and {treatment_2} are missing in the summary table.")
+        return
+
+    filtered_table = pivot_table[pivot_table['ΔTm'].abs() > threshold].reset_index()
+
+    if filtered_table.empty:
+        st.warning(f"No proteins found with ΔTm greater than {threshold}°C.")
+        return
+
+    filtered_table = filtered_table.merge(summary_table[['protein', 'GO ID']], on='protein', how='inner')
+
+    filtered_table = filtered_table[filtered_table['GO ID'].notna() & (filtered_table['GO ID'] != 'NA')]
+
+    if filtered_table.empty:
+        st.warning("No proteins with valid GO IDs after filtering.")
+        return
+
+    go_id_series = filtered_table['GO ID'].dropna()
+    go_id_counts = go_id_series.str.split(';').explode().value_counts()
+
+    plt.figure(figsize=(10, 6))
+    go_id_counts.head(20).plot(kind='bar', color='skyblue')
+    plt.title(f"Top 20 GO IDs with ΔTm > {threshold}°C (Comparing {treatment_1} vs {treatment_2})")
+    plt.xlabel("GO ID")
+    plt.ylabel("Frequency")
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
     
-    return results
-
-def select_normality_tests():
-    st.subheader("Normality Test Selection")
-    with st.expander("Select Normality Tests to Apply"):
-        log_transform = st.checkbox("Log Transformation", value=True)
-        sqrt_transform = st.checkbox("Square Root Transformation", value=True)
-        boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
-        yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
-
-    # Collect selected transformations
-    transformations_to_apply = []
-    if log_transform:
-        transformations_to_apply.append("Log")
-    if sqrt_transform:
-        transformations_to_apply.append("Square Root")
-    if boxcox_transform:
-        transformations_to_apply.append("Box-Cox")
-    if yeojohnson_transform:
-        transformations_to_apply.append("Yeo-Johnson")
-
-    # Store the selected transformations in the session state
-    st.session_state['transformations_to_apply'] = transformations_to_apply
-
+    st.pyplot(plt)
+    plt.close()
 
 def analysis():
     st.title("TPP Analysis App")
 
-    # Initialize session state variables
     if 'tsv_data' not in st.session_state:
         st.session_state.tsv_data = None
     if 'csv_data' not in st.session_state:
@@ -485,15 +639,20 @@ def analysis():
         st.session_state.edit_mode_tsv = False
     if 'edit_mode_csv' not in st.session_state:
         st.session_state.edit_mode_csv = False
+    if 'normalize_data' not in st.session_state:
+        st.session_state.normalize_data = True
+    if 'selected_temp' not in st.session_state:
+        st.session_state.selected_temp = None
+    if 'perform_shapiro' not in st.session_state:
+        st.session_state.perform_shapiro = False
+    if 'transformations_to_apply' not in st.session_state:
+        st.session_state.transformations_to_apply = []
 
-    # File uploaders
     uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
     uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
 
-    # Create a row with three columns for the buttons
     col1, col2, col3 = st.columns(3)
 
-    # Button to load uploaded data
     with col1:
         if st.button('Load uploaded data'):
             if uploaded_tsv is not None and uploaded_csv is not None:
@@ -503,9 +662,9 @@ def analysis():
             else:
                 st.warning("Please upload both TSV and CSV files before loading.")
 
-    # Button to load sample data
     with col2:
-        if st.button('Load sample data', help=sample_help):
+        sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
+        if st.button('Load example data', help=sample_help):
             data_path = os.path.dirname(os.path.abspath(__file__))
             tsv_path = os.path.join(data_path, "sample_data.tsv")
             csv_path = os.path.join(data_path, "sample_metadata.csv")
@@ -513,7 +672,6 @@ def analysis():
             st.session_state.csv_data = read_csv_file(csv_path)
             st.success("Sample data loaded successfully!")
 
-    # Button to clear loaded data
     with col3:
         if st.button('Clear loaded data'):
             st.session_state.tsv_data = None
@@ -522,13 +680,11 @@ def analysis():
             st.session_state.edit_mode_csv = False
             st.success("All loaded data has been cleared!")
 
-    # Display data status
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.info("TSV and CSV data are loaded and ready for analysis.")
     else:
         st.warning("Please load both TSV and CSV data to proceed with analysis.")
 
-    # Display and edit TSV data
     if st.session_state.tsv_data is not None:
         with st.expander("TSV Data", expanded=True):
             col1, col2 = st.columns([3, 1])
@@ -536,7 +692,7 @@ def analysis():
                 st.subheader("TSV Data")
             with col2:
                 edit_button = st.button("Toggle Edit Mode (TSV)")
-            
+
             if edit_button:
                 st.session_state.edit_mode_tsv = not st.session_state.edit_mode_tsv
 
@@ -548,7 +704,6 @@ def analysis():
             else:
                 st.dataframe(st.session_state.tsv_data)
 
-    # Display and edit CSV data
     if st.session_state.csv_data is not None:
         with st.expander("CSV Metadata", expanded=True):
             col1, col2 = st.columns([3, 1])
@@ -556,7 +711,7 @@ def analysis():
                 st.subheader("CSV Metadata")
             with col2:
                 edit_button = st.button("Toggle Edit Mode (CSV)")
-            
+
             if edit_button:
                 st.session_state.edit_mode_csv = not st.session_state.edit_mode_csv
 
@@ -571,58 +726,85 @@ def analysis():
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.subheader("Analysis Setup")
 
-        # Extract sample information from CSV
         metadata = extract_samples(st.session_state.csv_data)
 
         if metadata is None:
             st.error("Failed to extract samples from metadata. Please check your CSV file.")
         else:
-            # Set maximum number of zeros allowed
-            max_allowed_zeros = st.number_input("Maximum number of zeros allowed", min_value=0, value=20, step=1)
-
-            # Count rows to be dropped
+            max_allowed_zeros = st.number_input("Maximum number of missing values allowed", min_value=0, value=20, step=1)
             droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
-            st.write(f"Number of rows with {max_allowed_zeros} or more zeros: {droppable_rows} (Will be dropped)")
-            # Checkbox for normalization
-            normalize_data = st.checkbox("Normalize", value=True)
+            st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
 
+            normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
+            
             if normalize_data:
-                # Clean temperature data to remove duplicates and sort them
                 unique_temperatures = sorted(set(metadata['Temperature']))
-
-                # Allow user to select the temperature point for normalization
                 selected_temp = st.selectbox(
                     "Select the temperature to which data should be normalized:",
-                    options=unique_temperatures
+                    options=unique_temperatures,
+                    index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) if st.session_state.get('selected_temp') in unique_temperatures else 0
                 )
 
             else:
-                selected_temp = None  # No normalization
+                selected_temp = None
+
+            if selected_temp is None and normalize_data:
+                st.warning("Please select a temperature for normalization.")
+
+            if st.button("Apply normalization Settings"):
+                st.session_state.normalize_data = normalize_data
+                st.session_state.selected_temp = selected_temp
+                st.success("Normalization settings applied successfully!")
 
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
             if include_go_annotation:
-                # Connect to the database
                 conn = duckdb.connect('multi_proteome_go.duckdb')
-
-                # Get all species from the database
                 species = conn.execute("SELECT name FROM species").fetchall()
                 species_names = [s[0] for s in species]
-
-                # Use species names in the selectbox
                 selected_species = st.selectbox("Select species for GO annotation", species_names)
+                conn.close()
 
-            select_normality_tests()
+            with st.expander("Shapiro-Wilk Normality Test"):
+                perform_shapiro = st.checkbox("Perform Shapiro-Wilk Test", value=False)
+                
+                if perform_shapiro:
+                    st.subheader("Normality Test Selection")
+                    log_transform = st.checkbox("Log Transformation", value=True)
+                    sqrt_transform = st.checkbox("Square Root Transformation", value=True)
+                    boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
+                    yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
 
-            
+                    transformations_to_apply = []
+                    if log_transform:
+                        transformations_to_apply.append("Log")
+                    if sqrt_transform:
+                        transformations_to_apply.append("Square Root")
+                    if boxcox_transform:
+                        transformations_to_apply.append("Box-Cox")
+                    if yeojohnson_transform:
+                        transformations_to_apply.append("Yeo-Johnson")
 
-            # Start Analysis button
+                if st.button("Apply Shapiro-Wilk Test Settings"):
+                    st.session_state.perform_shapiro = perform_shapiro
+                    if perform_shapiro:
+                        st.session_state.transformations_to_apply = transformations_to_apply
+                    st.success("Shapiro-Wilk Test settings applied successfully!")
+
+            visualize_go_ids = False
+
+            with st.expander("Data Visualization Options"):
+                show_distribution = st.checkbox("Show Distribution of Melting Points", value=False)
+                show_violin_plot = st.checkbox("Compare Melting Points Between Treatments (Violin Plot)", value=False)
+                if include_go_annotation:
+                    visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False)
+                    if visualize_go_ids:
+                        threshold = st.number_input("ΔTm threshold for GO ID visualization", min_value=0.0, value=4.0, step=0.1)
+                    
             if st.button("Start Analysis"):
-                # Process data
                 tsv_data = st.session_state.tsv_data
                 csv_data = st.session_state.csv_data
 
-                # Generate and display results
                 filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
 
                 st.subheader("Analysis Results")
@@ -636,21 +818,18 @@ def analysis():
 
                 start_time = time.time()
                 with st.spinner("Fitting curves and generating plots..."):
-                  figures, summary_table = fit_and_plot(average_dict, selected_temp, normalize_data)
+                    figures, summary_table = fit_and_plot(average_dict, st.session_state.selected_temp, st.session_state.normalize_data)
                 end_time = time.time()
                 figure_generation_time = end_time - start_time
 
                 st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
 
-
                 if include_go_annotation:
+                    conn = duckdb.connect('multi_proteome_go.duckdb')
                     with st.spinner("Adding GO annotations..."):
                         protein_ids = summary_table['protein'].tolist()
-                        
-                        # Get GO annotations from the database, now using selected_species
                         annotations = get_go_annotations(conn, protein_ids, selected_species)
-                        
-                        # Update the summary table with GO annotations
+
                         for index, row in summary_table.iterrows():
                             protein_id = row['protein']
                             annotation = annotations.get(protein_id, {'GO ID': ['NA'], 'Function': ['NA'], 'Link': 'NA'})
@@ -660,11 +839,21 @@ def analysis():
 
                         st.write("GO annotations added to the summary table.")
 
-                    # Close the database connection
                     conn.close()
-                
-                if 'transformations_to_apply' in st.session_state:
+
+                st.subheader("Data Visualization")
+
+                if show_distribution:
+                    plot_melting_point_distribution(summary_table)
+
+                if show_violin_plot:
+                    compare_melting_points_violin(summary_table)
+
+                if st.session_state.perform_shapiro:
                     perform_transformations_and_shapiro_test(summary_table, st.session_state['transformations_to_apply'])
+
+                if visualize_go_ids:
+                    visualize_go_ids_with_dtm(summary_table, threshold)
 
                 start_time = time.time()
 
@@ -675,7 +864,6 @@ def analysis():
 
                 st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
 
-                # Provide download option for results
                 st.download_button(
                     label="Download zipped SVGs",
                     data=zip_file,
@@ -683,7 +871,6 @@ def analysis():
                     mime="application/zip"
                 )
 
-                # Display summary table
                 st.subheader("Summary Table")
                 st.dataframe(summary_table)
 
@@ -691,13 +878,11 @@ def analysis():
 
 def main():
     st.set_page_config(
-    page_title="TPP Solver",
-    page_icon="logo_32x32.png",  
-    layout="wide",
-)
+        page_title="TPP Solver",
+        page_icon="logo_32x32.png",
+        layout="wide",
+    )
     st.sidebar.title("Navigation")
-    #
-    # Sidebar navigation
     page = st.sidebar.radio("Go to", ["Main App", 'GO Annotation', "README"])
 
     if page == "README":

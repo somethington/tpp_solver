@@ -8,4 +8,5 @@ biopython
 duckdb
 scipy
 requests
-
+plotly
+seaborn
