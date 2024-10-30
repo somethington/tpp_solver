@@ -15,6 +15,7 @@ import seaborn as sns
 from readme_content import display_readme
 import plotly.graph_objects as go
 import plotly.express as px
+import textwrap
 
 # File reading functions
 def read_tsv_file(file_path):
@@ -31,8 +32,6 @@ def paper_sigmoidal(T, A1, A2, Tm):
     return A2 + (A1 - A2) / (1 + np.exp((T - Tm)))
 
 # Data extraction and processing functions
-
-# Extract sample information from CSV
 def extract_samples(csv_data):
     named_columns = [col for col in csv_data.columns if not col.startswith('Unnamed:')]
     categories = ["Temperature", "Treatment", "Samples"]
@@ -43,7 +42,8 @@ def extract_samples(csv_data):
         selected_columns[category] = st.selectbox(
             f"Select column for {category}:",
             options=[""] + named_columns,
-            index=named_columns.index(default_column) + 1 if default_column else 0
+            index=named_columns.index(default_column) + 1 if default_column else 0,
+            key=f"{category}_column"
         )
 
     result = {}
@@ -54,7 +54,7 @@ def extract_samples(csv_data):
         if column not in csv_data.columns:
             st.error(f"The CSV file does not contain a '{column}' column")
             return None
-        result[category] = [x for x in csv_data[column].tolist() if str(x) != 'nan']
+        result[category] = csv_data[column].dropna().tolist()
     
     return {
         "Temperature": result.get("Temperature", []),
@@ -88,7 +88,7 @@ def filter_and_lowest_float(tsv_data, samples, max_zeroes_allowed):
 def count_invalid_rows(tsv_data, samples, max_zeros_allowed):
     missing_cols = set(samples) - set(tsv_data.columns)
     if missing_cols:
-        raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV")
+        raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV" , missing_cols)
     
     selected_data = tsv_data[samples]
     num_data = selected_data.apply(pd.to_numeric, errors='coerce')
@@ -153,16 +153,24 @@ def average_samples(sample_groups, filtered_data):
                 averaged_data[treatment][protein_id][sample[0]] = average_val
     return averaged_data
 
-# Fit curve and plot data for a single protein
-# Fit curve and plot data for a single protein
-# Fit curve and plot data for a single protein
 def process_protein(args):
-    protein, data_dict, markers, sizes, alphas, positions, selected_temp, normalize_data = args
-    fig, ax = plt.subplots(figsize=(10, 6))
+    (
+        protein,
+        data_dict,
+        markers,
+        sizes,
+        alphas,
+        positions,
+        selected_temp,
+        normalize_data,
+        r2_threshold,
+    ) = args
     summary_data = []
-    
+    fig = None
+    ax = None  
+
     try:
-        y_offset = 0.0  # Initial y offset for R^2 labels
+        y_offset = 0.0 
         for treatment, proteins in data_dict.items():
             if protein in proteins:
                 temperatures = np.array(list(proteins[protein].keys()))
@@ -173,21 +181,19 @@ def process_protein(args):
                 values = values[index]
 
                 if normalize_data:
-                    norm_index = np.where(temperatures == selected_temp)[0][0]
-                    values = [entry / values[norm_index] for entry in values]
+                    norm_indices = np.where(temperatures == selected_temp)[0]
+                    if len(norm_indices) == 0:
+                        continue 
+                    norm_index = norm_indices[0]
+                    values = values / values[norm_index]
 
                 valmax = max(values)
                 med = np.median(temperatures)
                 minval = min(values)
 
-                marker = next(markers)
-                size = next(sizes)
-                alpha = next(alphas)
-                curpos = next(positions)
-
-                ax.scatter(temperatures, values, marker=marker, s=size, alpha=alpha, label=f'{protein} {treatment} measured')
-
-                popt, _ = curve_fit(sigmoid, temperatures, values, p0=[valmax, med, minval])
+                popt, _ = curve_fit(
+                    sigmoid, temperatures, values, p0=[valmax, med, minval]
+                )
 
                 # Predicted values using the fitted sigmoid curve
                 fitted_values = sigmoid(temperatures, *popt)
@@ -196,47 +202,92 @@ def process_protein(args):
                 ss_res = np.sum((values - fitted_values) ** 2)
                 ss_tot = np.sum((values - np.mean(values)) ** 2)
 
-                # R^2 calculation
+                # R² calculation
                 r_squared = 1 - (ss_res / ss_tot)
+
+                # Filter based on R² threshold
+                if r_squared < r2_threshold:
+                    continue  # Skip this treatment if R² is below threshold
+
+                # Proceed with plotting
+                if fig is None and ax is None:
+                    fig, ax = plt.subplots(figsize=(10, 6))
+
+                marker = next(markers)
+                size = next(sizes)
+                alpha = next(alphas)
+                curpos = next(positions)
+
+                ax.scatter(
+                    temperatures,
+                    values,
+                    marker=marker,
+                    s=size,
+                    alpha=alpha,
+                    label=f"{protein} {treatment} measured",
+                )
 
                 melt_pt = sigmoid(popt[1], *popt)
 
                 temp_range = np.linspace(temperatures.min(), temperatures.max(), 100)
-                ax.plot(temp_range, sigmoid(temp_range, *popt), '--', alpha=0.7, label=f'{protein} {treatment} fitted')
+                ax.plot(
+                    temp_range,
+                    sigmoid(temp_range, *popt),
+                    "--",
+                    alpha=0.7,
+                    label=f"{protein} {treatment} fitted",
+                )
 
-                ax.scatter(popt[1], melt_pt, color='red', s=75, marker='^')
-                ax.text(popt[1], melt_pt, f'{popt[1]:.2f}', color='red', horizontalalignment=curpos, verticalalignment='bottom')
+                ax.scatter(popt[1], melt_pt, color="red", s=75, marker="^")
+                ax.text(
+                    popt[1],
+                    melt_pt,
+                    f"{popt[1]:.2f}",
+                    color="red",
+                    horizontalalignment=curpos,
+                    verticalalignment="bottom",
+                )
 
-                # Add R^2 value to the plot with a slight vertical offset
-                ax.text(0.05, 0.95 - y_offset, f'R^2 ({treatment}) = {r_squared:.2f}', 
-                        transform=ax.transAxes, fontsize=12, verticalalignment='top', 
-                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.5))
+                ax.text(
+                    0.05,
+                    0.95 - y_offset,
+                    f"R² ({treatment}) = {r_squared:.2f}",
+                    transform=ax.transAxes,
+                    fontsize=12,
+                    verticalalignment="top",
+                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.5),
+                )
 
-                # Update the y_offset to prevent overlap of R^2 labels
                 y_offset += 0.07
 
-                summary_data.append({
-                    'protein': protein,
-                    'treatment': treatment,
-                    'melting point': popt[1],
-                    'R^2': r_squared,
-                    'residuals': ','.join(map(str, (values - fitted_values))),
-                })
+                summary_data.append(
+                    {
+                        "protein": protein,
+                        "treatment": treatment,
+                        "melting point": popt[1],
+                        "R²": r_squared,
+                        "residuals": ",".join(map(str, (values - fitted_values))),
+                    }
+                )
 
-        ax.set_xlabel('Temperature')
-        ax.set_ylabel('Intensity')
-        ax.set_title(f'Fitted Curve for {protein}')
-        ax.legend()
+        if fig is not None and ax is not None:
+            ax.set_xlabel("Temperature")
+            ax.set_ylabel("Intensity")
+            ax.set_title(f"Fitted Curve for {protein}")
+            ax.legend()
 
-        return protein, fig, summary_data
+            return protein, fig, summary_data
+        else:
+            return None, None, None
+
     except RuntimeError as e:
         print(f"Error processing protein {protein}: {str(e)}")
         return None, None, None
     except Exception as e:
         print(f"Unexpected error processing protein {protein}: {str(e)}")
         return None, None, None
-# Fit curves and plot data for all proteins using multiprocessing
-def fit_and_plot(data_dict, selected_temp, normalize_data):
+    
+def fit_and_plot(data_dict, selected_temp, normalize_data, r2_threshold):
     all_proteins = set()
     for treatment in data_dict.values():
         all_proteins.update(treatment.keys())
@@ -249,7 +300,7 @@ def fit_and_plot(data_dict, selected_temp, normalize_data):
     pool = mp.Pool(processes=mp.cpu_count())
     
     results = pool.map(process_protein, 
-                       [(protein, data_dict, iter(markers), iter(sizes), iter(alphas), iter(positions), selected_temp, normalize_data) 
+                       [(protein, data_dict, iter(markers), iter(sizes), iter(alphas), iter(positions), selected_temp, normalize_data, r2_threshold) 
                         for protein in all_proteins])
     pool.close()
     pool.join()
@@ -473,14 +524,14 @@ def compare_melting_points_violin(summary_table):
             opacity=0.6,
             hoverinfo='y',
             width=0.6,
-            points=False,  # We will add jittered scatter plot separately
+            points=False,  
             line_color='black',
             fillcolor=violin_color,
             showlegend=True
         ))
 
-        # Add jittered scatter plot (strip plot) for each treatment
-        jitter_strength = 0.05  # Adjust the jitter strength as needed
+
+        jitter_strength = 0.05  
         jittered_x = treatment_num + np.random.uniform(-jitter_strength, jitter_strength, size=len(treatment_data))
 
         fig.add_trace(go.Scatter(
@@ -490,10 +541,10 @@ def compare_melting_points_violin(summary_table):
             name=f"{treatment} Points",
             marker=dict(color='black', size=6, opacity=0.8),
             hoverinfo='y',
-            showlegend=True  # Show legend for points
+            showlegend=True  
         ))
 
-    # Update layout
+
     fig.update_layout(
         title="Melting Point Comparison Across Treatments",
         xaxis_title="Treatment",
@@ -501,7 +552,7 @@ def compare_melting_points_violin(summary_table):
         template='plotly_white',
         violingap=0.5,
         violingroupgap=0,
-        violinmode='overlay',  # Adjust to 'group' if you prefer side-by-side violins
+        violinmode='overlay',
         width=800,
         height=600,
         xaxis=dict(
@@ -563,7 +614,7 @@ def go_annotation():
 
 def get_go_annotations(conn, protein_ids, species_name):
     query = """
-    SELECT p.id AS protein_id, g.id AS go_id, g.function, p.link
+    SELECT p.id AS protein_id, p.name AS protein_name, g.id AS go_id, g.function, p.link
     FROM proteins p
     JOIN protein_go_terms pgt ON p.id = pgt.protein_id
     JOIN go_terms g ON pgt.go_term_id = g.id
@@ -574,30 +625,28 @@ def get_go_annotations(conn, protein_ids, species_name):
     
     annotations = {}
     for row in result:
-        protein_id, go_id, function, link = row
+        protein_id, protein_name, go_id, function, link = row
         if protein_id not in annotations:
-            annotations[protein_id] = {'GO ID': [], 'Function': [], 'Link': link}
+            annotations[protein_id] = {
+                'Protein Name': protein_name,
+                'GO ID': [],
+                'Function': [],
+                'Link': link
+            }
         annotations[protein_id]['GO ID'].append(go_id)
         annotations[protein_id]['Function'].append(function)
     
     return annotations
 
-def visualize_go_ids_with_dtm(summary_table, threshold):
-    treatments = summary_table['treatment'].unique()
-    
-    if len(treatments) < 2:
-        st.error("There must be at least two treatments to calculate ΔTm.")
-        return
 
-    treatment_1 = treatments[0]
-    treatment_2 = treatments[1]
-
+def visualize_go_ids_with_dtm(summary_table, threshold, treatment_1, treatment_2):
+    # Proceed with computations after the selections
     pivot_table = summary_table.pivot(index='protein', columns='treatment', values='melting point')
 
     if treatment_1 in pivot_table.columns and treatment_2 in pivot_table.columns:
         pivot_table['ΔTm'] = pivot_table[treatment_1] - pivot_table[treatment_2]
     else:
-        st.error(f"The selected treatments {treatment_1} and {treatment_2} are missing in the summary table.")
+        st.error(f"The selected treatments '{treatment_1}' and '{treatment_2}' are missing in the summary table.")
         return
 
     filtered_table = pivot_table[pivot_table['ΔTm'].abs() > threshold].reset_index()
@@ -606,7 +655,9 @@ def visualize_go_ids_with_dtm(summary_table, threshold):
         st.warning(f"No proteins found with ΔTm greater than {threshold}°C.")
         return
 
-    filtered_table = filtered_table.merge(summary_table[['protein', 'GO ID']], on='protein', how='inner')
+    # Merge GO ID and Function
+    go_data = summary_table[['protein', 'GO ID', 'Function']].drop_duplicates()
+    filtered_table = filtered_table.merge(go_data, on='protein', how='inner')
 
     filtered_table = filtered_table[filtered_table['GO ID'].notna() & (filtered_table['GO ID'] != 'NA')]
 
@@ -614,19 +665,54 @@ def visualize_go_ids_with_dtm(summary_table, threshold):
         st.warning("No proteins with valid GO IDs after filtering.")
         return
 
-    go_id_series = filtered_table['GO ID'].dropna()
-    go_id_counts = go_id_series.str.split(';').explode().value_counts()
+    # Explode GO IDs and Functions
+    filtered_table['GO ID'] = filtered_table['GO ID'].str.split(';')
+    filtered_table['Function'] = filtered_table['Function'].str.split(';')
+    exploded_table = filtered_table.explode(['GO ID', 'Function'])
 
-    plt.figure(figsize=(10, 6))
-    go_id_counts.head(20).plot(kind='bar', color='skyblue')
-    plt.title(f"Top 20 GO IDs with ΔTm > {threshold}°C (Comparing {treatment_1} vs {treatment_2})")
-    plt.xlabel("GO ID")
-    plt.ylabel("Frequency")
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-    
-    st.pyplot(plt)
-    plt.close()
+    # Group by Function to get counts
+    function_counts = exploded_table.groupby('Function').size().reset_index(name='counts')
+    # Collect corresponding GO IDs
+    function_go_ids = exploded_table.groupby('Function')['GO ID'].apply(lambda x: '; '.join(set(x))).reset_index()
+
+    # Merge counts and GO IDs
+    function_data = function_counts.merge(function_go_ids, on='Function')
+
+    # Sort by counts
+    function_data = function_data.sort_values(by='counts', ascending=False).head(20)
+
+    # Wrap function names for x-axis labels
+    max_label_length = 30  # Adjust as needed
+    function_data['Wrapped Function'] = function_data['Function'].apply(
+        lambda x: '<br>'.join(textwrap.wrap(x, width=max_label_length))
+    )
+
+    # Create interactive bar plot with Plotly
+    fig = go.Figure(data=[
+        go.Bar(
+            x=function_data['Wrapped Function'],
+            y=function_data['counts'],
+            hovertemplate='<b>Function:</b> %{customdata[0]}<br><b>Count:</b> %{y}<br><b>GO IDs:</b> %{customdata[1]}<extra></extra>',
+            customdata=np.stack((function_data['Function'], function_data['GO ID']), axis=-1),
+            marker=dict(color='skyblue'),
+        )
+    ])
+
+    fig.update_layout(
+        title=f"Top 20 Functions with ΔTm > {threshold}°C (Comparing '{treatment_1}' vs '{treatment_2}')",
+        xaxis_title="Function",
+        yaxis_title="Frequency",
+        template='plotly_white',
+        xaxis_tickangle=-90,  # Rotate labels vertically
+        xaxis=dict(
+            automargin=True,
+            tickmode='linear',
+            tickfont=dict(size=10),
+        ),
+        margin=dict(b=150),  # Increase bottom margin to accommodate labels
+    )
+
+    st.plotly_chart(fig)
 
 def analysis():
     st.title("TPP Analysis App")
@@ -726,15 +812,19 @@ def analysis():
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.subheader("Analysis Setup")
 
+        if 'r2_threshold' not in st.session_state:
+            st.session_state.r2_threshold = 0.8  # Default R² threshold
+
         metadata = extract_samples(st.session_state.csv_data)
 
         if metadata is None:
             st.error("Failed to extract samples from metadata. Please check your CSV file.")
+            return
         else:
             max_allowed_zeros = st.number_input("Maximum number of missing values allowed", min_value=0, value=20, step=1)
             droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
             st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
-
+            
             normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
             
             if normalize_data:
@@ -744,17 +834,14 @@ def analysis():
                     options=unique_temperatures,
                     index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) if st.session_state.get('selected_temp') in unique_temperatures else 0
                 )
+                st.session_state.normalize_data = normalize_data
+                st.session_state.selected_temp = selected_temp
 
             else:
                 selected_temp = None
 
             if selected_temp is None and normalize_data:
                 st.warning("Please select a temperature for normalization.")
-
-            if st.button("Apply normalization Settings"):
-                st.session_state.normalize_data = normalize_data
-                st.session_state.selected_temp = selected_temp
-                st.success("Normalization settings applied successfully!")
 
             include_go_annotation = st.checkbox("Include GO annotation", value=False)
 
@@ -764,6 +851,40 @@ def analysis():
                 species_names = [s[0] for s in species]
                 selected_species = st.selectbox("Select species for GO annotation", species_names)
                 conn.close()
+
+            # Get the list of treatments from metadata
+            treatments = list(set(metadata['Treatment']))
+
+            with st.expander("Data Visualization Options"):
+                show_distribution = st.checkbox("Show Distribution of Melting Points", value=False)
+                show_violin_plot = st.checkbox("Compare Melting Points Between Treatments (Violin Plot)", value=False)
+                if include_go_annotation:
+                    visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False)
+                    if visualize_go_ids:
+                        threshold = st.number_input("ΔTm threshold for GO ID visualization", value=4.0, step=0.1)
+                        if 'treatment_1' not in st.session_state:
+                            st.session_state['treatment_1'] = treatments[0]
+                        if 'treatment_2' not in st.session_state:
+                            st.session_state['treatment_2'] = treatments[1]
+
+                        treatment_1 = st.selectbox(
+                            "Select the first treatment:",
+                            treatments,
+                            key='treatment_1'
+                        )
+                        treatment_2 = st.selectbox(
+                            "Select the second treatment:",
+                            treatments,
+                            key='treatment_2'
+                        )
+
+            st.session_state.r2_threshold = st.slider(
+                "Set the R² threshold for filtering proteins:",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.r2_threshold,
+                step=0.01,
+            )
 
             with st.expander("Shapiro-Wilk Normality Test"):
                 perform_shapiro = st.checkbox("Perform Shapiro-Wilk Test", value=False)
@@ -791,16 +912,6 @@ def analysis():
                         st.session_state.transformations_to_apply = transformations_to_apply
                     st.success("Shapiro-Wilk Test settings applied successfully!")
 
-            visualize_go_ids = False
-
-            with st.expander("Data Visualization Options"):
-                show_distribution = st.checkbox("Show Distribution of Melting Points", value=False)
-                show_violin_plot = st.checkbox("Compare Melting Points Between Treatments (Violin Plot)", value=False)
-                if include_go_annotation:
-                    visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False)
-                    if visualize_go_ids:
-                        threshold = st.number_input("ΔTm threshold for GO ID visualization", min_value=0.0, value=4.0, step=0.1)
-                    
             if st.button("Start Analysis"):
                 tsv_data = st.session_state.tsv_data
                 csv_data = st.session_state.csv_data
@@ -818,7 +929,7 @@ def analysis():
 
                 start_time = time.time()
                 with st.spinner("Fitting curves and generating plots..."):
-                    figures, summary_table = fit_and_plot(average_dict, st.session_state.selected_temp, st.session_state.normalize_data)
+                    figures, summary_table = fit_and_plot(average_dict, st.session_state.selected_temp, st.session_state.normalize_data, st.session_state.r2_threshold)
                 end_time = time.time()
                 figure_generation_time = end_time - start_time
 
@@ -832,15 +943,24 @@ def analysis():
 
                         for index, row in summary_table.iterrows():
                             protein_id = row['protein']
-                            annotation = annotations.get(protein_id, {'GO ID': ['NA'], 'Function': ['NA'], 'Link': 'NA'})
+                            annotation = annotations.get(protein_id, {
+                                'Protein Name': 'NA',
+                                'GO ID': ['NA'],
+                                'Function': ['NA'],
+                                'Link': 'NA'
+                            })
+                            summary_table.at[index, 'Protein Name'] = annotation['Protein Name']
                             summary_table.at[index, 'GO ID'] = ';'.join(annotation['GO ID'])
                             summary_table.at[index, 'Function'] = ';'.join(annotation['Function'])
                             summary_table.at[index, 'Link'] = annotation['Link']
 
-                        st.write("GO annotations added to the summary table.")
+                        st.write("GO annotations and protein names added to the summary table.")
 
                     conn.close()
 
+                    desired_order = ['protein', 'Protein Name', 'treatment', 'melting point', 'R²', 'residuals', 'GO ID', 'Function', 'Link']
+                    summary_table = summary_table[desired_order]
+                
                 st.subheader("Data Visualization")
 
                 if show_distribution:
@@ -853,7 +973,7 @@ def analysis():
                     perform_transformations_and_shapiro_test(summary_table, st.session_state['transformations_to_apply'])
 
                 if visualize_go_ids:
-                    visualize_go_ids_with_dtm(summary_table, threshold)
+                    visualize_go_ids_with_dtm(summary_table, threshold, treatment_1, treatment_2)
 
                 start_time = time.time()
 
@@ -891,6 +1011,7 @@ def main():
         analysis()
     elif page == "GO Annotation":
         go_annotation()
+    #elif page == "proteome scraper"
 
 if __name__ == "__main__":
     main()

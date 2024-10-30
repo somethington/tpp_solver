@@ -5,6 +5,7 @@ import os
 import logging
 from Bio import SeqIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import streamlit as st
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -28,19 +29,22 @@ def get_new_go_terms(go_ids):
     data = response.json()
     return [(item['id'], item['name']) for item in data['results']]
 
-def get_ids_names(conn, protein):
+def get_go_ids(conn, protein):
     url = f"https://rest.uniprot.org/uniprotkb/{protein}?fields=go_id"
-    headers = {"Accept": "text/plain; format=tsv"}
+    headers = {"Accept": "application/json"}
     retries = 3
 
     for attempt in range(retries):
         try:
-            logging.info(f"Attempting to fetch data for protein {protein} (attempt {attempt+1})")
+            logging.info(f"Attempting to fetch GO IDs for protein {protein} (attempt {attempt+1})")
             response = requests.get(url, headers=headers)
             response.raise_for_status()
-            logging.info(f"Raw response for protein {protein}: {response.text}")
-            go_ids = list(set([s.replace(";", "") for s in response.text.split()[3:]]))  # Use set to remove duplicates
-            logging.info(f"Parsed unique GO IDs for protein {protein}: {go_ids}")
+            data = response.json()
+            logging.info(f"Raw response for protein {protein}: {data}")
+
+            # Extract GO IDs
+            go_ids = data.get('goId', [])
+            logging.info(f"Parsed GO IDs for protein {protein}: {go_ids}")
 
             if not go_ids:
                 logging.warning(f"No GO IDs found for protein {protein}")
@@ -57,27 +61,44 @@ def get_ids_names(conn, protein):
 
             return [(id, existing_terms[id]) for id in go_ids]
         except requests.RequestException as e:
-            logging.error(f"Error fetching data for protein {protein} (attempt {attempt+1}): {str(e)}")
+            logging.error(f"Error fetching GO IDs for protein {protein} (attempt {attempt+1}): {str(e)}")
             time.sleep(5)
             if attempt == retries - 1:
-                logging.error(f"Failed to fetch data for {protein} after {retries} attempts.")
+                logging.error(f"Failed to fetch GO IDs for {protein} after {retries} attempts.")
                 return []
+        except Exception as e:
+            logging.error(f"Unexpected error for protein {protein}: {str(e)}")
+            return []
 
-def extract_protein_ids(fasta_file):
-    protein_ids = []
+def extract_protein_ids_and_names(fasta_file):
+    proteins = []
     fasta_file_path = os.path.join("fasta", fasta_file)
     if not os.path.exists(fasta_file_path):
         logging.error(f"File not found: {fasta_file_path}")
-        return protein_ids
+        return proteins
 
     for record in SeqIO.parse(fasta_file_path, "fasta"):
         description = record.description
+        # Extract protein_id
         protein_id = description.split('|')[1]
-        protein_ids.append(protein_id)
-    return protein_ids
+        # Extract the rest of the description after the third '|'
+        full_description = description.split('|')[2]
+        # Split at ' OS='
+        name_and_rest = full_description.split(' OS=')
+        name_part = name_and_rest[0]
+        # Split name_part at spaces
+        tokens = name_part.split(' ')
+        if len(tokens) > 1:
+            # Protein name is tokens[1:]
+            protein_name = ' '.join(tokens[1:]).strip()
+        else:
+            protein_name = ''
+        proteins.append((protein_id, protein_name))
+    return proteins
 
 def extract_species_from_fasta(fasta_file):
-    with open(fasta_file, 'r') as file:
+    fasta_file_path = os.path.join("fasta", fasta_file)
+    with open(fasta_file_path, 'r') as file:
         first_line = file.readline().strip()
         species_start = first_line.find("OS=") + 3
         species_end = first_line.find(" OX=", species_start)
@@ -91,14 +112,33 @@ def create_tables(conn):
         proteome_file TEXT UNIQUE
     )
     ''')
-    conn.execute('''
-    CREATE TABLE IF NOT EXISTS proteins (
-        id TEXT PRIMARY KEY,
-        species_id INTEGER,
-        link TEXT,
-        FOREIGN KEY (species_id) REFERENCES species (id)
-    )
-    ''')
+
+    # Check if 'proteins' table exists
+    tables = conn.execute("SHOW TABLES").fetchall()
+    table_names = [t[0] for t in tables]
+
+    if 'proteins' in table_names:
+        # Check if 'name' column exists
+        columns = conn.execute("PRAGMA table_info('proteins')").fetchall()
+        column_names = [col[1] for col in columns]
+        if 'name' not in column_names:
+            conn.execute('ALTER TABLE proteins ADD COLUMN name TEXT')
+            logging.info("Added 'name' column to 'proteins' table")
+        else:
+            logging.info("'name' column already exists in 'proteins' table")
+    else:
+        # Create 'proteins' table with 'name' column
+        conn.execute('''
+        CREATE TABLE proteins (
+            id TEXT PRIMARY KEY,
+            species_id INTEGER,
+            name TEXT,
+            link TEXT,
+            FOREIGN KEY (species_id) REFERENCES species (id)
+        )
+        ''')
+
+    # Create other tables as before
     conn.execute('''
     CREATE TABLE IF NOT EXISTS go_terms (
         id TEXT PRIMARY KEY,
@@ -127,17 +167,17 @@ def insert_species(conn, species_name, proteome_file):
         species_id = max_id
     return species_id
 
-def insert_protein_data(conn, protein_id, species_id, go_terms):
-    # Insert or ignore if the protein already exists
+def insert_protein_data(conn, protein_id, species_id, go_terms, protein_name):
+    # Insert or update the protein data
     link = f"https://www.uniprot.org/uniprotkb/{protein_id}"
     logging.info(f"Inserting/updating protein: {protein_id} for species: {species_id}")
-    
-    # Attempt to insert the new protein data. If the protein already exists, the insert will be ignored.
+
+    # Attempt to insert the new protein data. If the protein already exists, update the name.
     conn.execute('''
-        INSERT INTO proteins (id, species_id, link) 
-        VALUES (?, ?, ?)
-        ON CONFLICT (id) DO NOTHING
-    ''', (protein_id, species_id, link))
+        INSERT INTO proteins (id, species_id, name, link) 
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET name = excluded.name
+    ''', (protein_id, species_id, protein_name, link))
 
     # Insert GO term relationships
     if go_terms:
@@ -150,18 +190,33 @@ def insert_protein_data(conn, protein_id, species_id, go_terms):
 
     protein_count = check_commit(conn, "proteins")
     go_term_count = check_commit(conn, "protein_go_terms")
-    logging.info(f"Committed data for protein: {protein_id}. Total proteins: {protein_count}, Total GO terms: {go_term_count}")
 
-def get_processed_ids(conn, species_id):
-    result = conn.execute('SELECT id FROM proteins WHERE species_id = ?', (species_id,)).fetchall()
-    return set(row[0] for row in result)
+    # Add total number of proteins with names
+    total_names = conn.execute('SELECT COUNT(*) FROM proteins WHERE name IS NOT NULL AND name != ?', ('',)).fetchone()[0]
 
-def process_protein(protein, species_id, db_file):
+    logging.info(f"Committed data for protein: {protein_id}. Total proteins: {protein_count}, Total proteins with names: {total_names}, Total GO terms: {go_term_count}")
+
+def get_proteins_to_process(conn, species_id, protein_ids):
+    result = conn.execute('SELECT id, name FROM proteins WHERE species_id = ?', (species_id,)).fetchall()
+    processed_ids_with_names = set()
+    ids_missing_names = set()
+    for row in result:
+        protein_id, name = row
+        if name and name.strip() != '':
+            processed_ids_with_names.add(protein_id)
+        else:
+            ids_missing_names.add(protein_id)
+    # Proteins not yet processed or missing names
+    proteins_to_process = (set(protein_ids) - processed_ids_with_names) | ids_missing_names
+    return list(proteins_to_process)
+
+def process_protein(protein_info, species_id, db_file):
+    protein, protein_name = protein_info
     try:
         conn = duckdb.connect(db_file)
-        go_terms = get_ids_names(conn, protein)
-        insert_protein_data(conn, protein, species_id, go_terms)
-        logging.info(f"Processed protein: {protein}")
+        go_terms = get_go_ids(conn, protein)
+        insert_protein_data(conn, protein, species_id, go_terms, protein_name)
+        logging.info(f"Processed protein: {protein}, name: {protein_name}")
         return protein, len(go_terms)
     except Exception as e:
         logging.error(f"Error processing protein {protein}: {str(e)}")
@@ -178,6 +233,25 @@ def check_database(db_file):
         count = conn.execute(f"SELECT COUNT(*) FROM {table[0]}").fetchone()[0]
         logging.info(f"Number of rows in {table[0]}: {count}")
 
+def upload_proteome_file():
+    uploaded_file = st.file_uploader("Choose a FASTA file", type="fasta")
+    if uploaded_file is not None:
+        # Save the uploaded file to the 'fasta' directory
+        file_path = os.path.join("fasta", uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Check if the file is a valid FASTA file
+        try:
+            species_name = extract_species_from_fasta(uploaded_file.name)
+            st.success(f"File {uploaded_file.name} uploaded successfully.")
+            st.info(f"Species: {species_name}")
+            
+            # Call the function to process the uploaded file
+            upload_proteome_file(uploaded_file.name)
+        except Exception as e:
+            st.error(f"Error processing the file: {e}")
+
 def main():
     fasta_directory = "fasta"
     logging.info(f"Using DuckDB database at: {db_file}")
@@ -190,27 +264,32 @@ def main():
             if not fasta_file.endswith('.fasta'):
                 continue
 
-            fasta_path = os.path.join(fasta_directory, fasta_file)
-            species_name = extract_species_from_fasta(fasta_path)
+            species_name = extract_species_from_fasta(fasta_file)
             species_id = insert_species(conn, species_name, fasta_file)
 
             logging.info(f"Processing {fasta_file} for species: {species_name} (ID: {species_id})")
 
-            processed_ids = get_processed_ids(conn, species_id)
-            protein_ids = extract_protein_ids(fasta_file)
+            # Extract proteins with IDs and names
+            proteins = extract_protein_ids_and_names(fasta_file)
+            # Create a dictionary mapping IDs to names
+            protein_dict = {protein_id: protein_name for protein_id, protein_name in proteins}
+            protein_ids = list(protein_dict.keys())
+
+            # Get the proteins to process
+            proteins_to_process_ids = get_proteins_to_process(conn, species_id, protein_ids)
+
+            # Create a list of (protein_id, protein_name) for proteins to process
+            proteins_to_process = [(protein_id, protein_dict[protein_id]) for protein_id in proteins_to_process_ids]
 
             logging.info(f"Found {len(protein_ids)} proteins in {fasta_file}")
-            logging.info(f"{len(processed_ids)} proteins already processed")
-
-            unprocessed_proteins = [p for p in protein_ids if p not in processed_ids]
-            logging.info(f"Processing {len(unprocessed_proteins)} new proteins")
+            logging.info(f"Processing {len(proteins_to_process)} proteins (unprocessed or missing names)")
 
             start_time = time.time()
 
             # Use ThreadPoolExecutor for concurrent processing
             with ThreadPoolExecutor(max_workers=10) as executor:
-                futures = [executor.submit(process_protein, protein, species_id, db_file) for protein in unprocessed_proteins]
-                
+                futures = [executor.submit(process_protein, protein_info, species_id, db_file) for protein_info in proteins_to_process]
+
                 for future in as_completed(futures):
                     protein, go_term_count = future.result()
                     logging.info(f"Completed processing protein: {protein} with {go_term_count} GO terms")
@@ -218,13 +297,15 @@ def main():
             end_time = time.time()
             processing_time = end_time - start_time
 
-            if len(unprocessed_proteins) > 0:
-                logging.info(f"Processed {len(unprocessed_proteins)} proteins in {processing_time:.2f} seconds")
-                logging.info(f"Average time per protein: {processing_time / len(unprocessed_proteins):.2f} seconds")
+            if len(proteins_to_process) > 0:
+                logging.info(f"Processed {len(proteins_to_process)} proteins in {processing_time:.2f} seconds")
+                logging.info(f"Average time per protein: {processing_time / len(proteins_to_process):.2f} seconds")
 
             # After processing all proteins for a species, verify the insertion
             protein_count = conn.execute('SELECT COUNT(*) FROM proteins WHERE species_id = ?', (species_id,)).fetchone()[0]
+            proteins_with_names = conn.execute('SELECT COUNT(*) FROM proteins WHERE species_id = ? AND name IS NOT NULL AND name != ?', (species_id, '')).fetchone()[0]
             logging.info(f"Total proteins in database for species {species_name}: {protein_count}")
+            logging.info(f"Total proteins with names for species {species_name}: {proteins_with_names}")
 
             final_protein_count = check_commit(conn, "proteins")
             final_go_term_count = check_commit(conn, "protein_go_terms")
@@ -232,8 +313,10 @@ def main():
 
         # At the end of processing, check overall database status
         total_proteins = conn.execute('SELECT COUNT(*) FROM proteins').fetchone()[0]
+        total_proteins_with_names = conn.execute('SELECT COUNT(*) FROM proteins WHERE name IS NOT NULL AND name != ?', ('',)).fetchone()[0]
         total_go_terms = conn.execute('SELECT COUNT(*) FROM protein_go_terms').fetchone()[0]
         logging.info(f"Total proteins in database: {total_proteins}")
+        logging.info(f"Total proteins with names in database: {total_proteins_with_names}")
         logging.info(f"Total protein-GO term relationships: {total_go_terms}")
 
     except Exception as e:
