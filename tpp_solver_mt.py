@@ -564,78 +564,99 @@ def compare_melting_points_violin(summary_table):
 
     st.plotly_chart(fig)
 
-def go_annotation():   
+def go_annotation():
     st.title("GO Annotation Tool")
 
     conn = duckdb.connect('multi_proteome_go.duckdb')
 
-    protein_csv = st.file_uploader("Upload Protein CSV file", type=['csv'])
+    data_csv = st.file_uploader("Upload CSV file with IDs", type=['csv'])
 
-    if protein_csv is not None:
-        protein_data = pd.read_csv(protein_csv)
+    if data_csv is not None:
+        data = pd.read_csv(data_csv)
         st.write("Preview of uploaded data:")
-        st.dataframe(protein_data.head())
+        st.dataframe(data.head())
 
-        protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
+        id_column = st.selectbox("Select the column containing IDs", data.columns)
+        id_type = st.selectbox("Select ID Type", ["Protein", "Gene"])
 
-        if protein_id_column:
+        if id_column:
             species = conn.execute("SELECT name FROM species").fetchall()
             species_names = [s[0] for s in species]
             selected_species = st.selectbox("Select species for GO annotation", species_names)
 
             if st.button("Start Annotation"):
-                protein_ids = protein_data[protein_id_column].astype(str).tolist()
+                ids = data[id_column].astype(str).tolist()
 
-                annotations = get_go_annotations(conn, protein_ids, selected_species)
-                protein_data['GO ID'] = protein_data[protein_id_column].apply(
-                    lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+                annotations = get_go_annotations(conn, ids, selected_species, id_type.lower())
+
+                # Set the name field based on the ID type
+                name_field = 'Protein Name' if id_type == 'Protein' else 'Gene Name'
+
+                data[name_field] = data[id_column].apply(
+                    lambda pid: annotations.get(pid, {}).get('Name', 'NA')
                 )
-                protein_data['Function'] = protein_data[protein_id_column].apply(
-                    lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+                data['GO ID'] = data[id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'GO ID': []}).get('GO ID', ['NA']))
                 )
-                protein_data['Link'] = protein_data[protein_id_column].apply(
-                    lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+                data['Function'] = data[id_column].apply(
+                    lambda pid: '|'.join(annotations.get(pid, {'Function': []}).get('Function', ['NA']))
+                )
+                data['Link'] = data[id_column].apply(
+                    lambda pid: annotations.get(pid, {}).get('Link', 'NA')
                 )
 
                 st.subheader("Updated CSV Data with GO Annotations")
-                st.dataframe(protein_data)
+                st.dataframe(data)
 
-                csv = protein_data.to_csv(index=False)
+                csv = data.to_csv(index=False)
                 st.download_button(
                     label="Download Annotated CSV",
                     data=csv,
-                    file_name=f"annotated_proteins_{selected_species.replace(' ', '_')}.csv",
+                    file_name=f"annotated_{id_type.lower()}s_{selected_species.replace(' ', '_')}.csv",
                     mime='text/csv',
                 )
         else:
-            st.warning("Please select a column containing Protein IDs.")
+            st.warning("Please select a column containing IDs.")
 
     conn.close()
 
-def get_go_annotations(conn, protein_ids, species_name):
-    query = """
-    SELECT p.id AS protein_id, p.name AS protein_name, g.id AS go_id, g.function, p.link
-    FROM proteins p
-    JOIN protein_go_terms pgt ON p.id = pgt.protein_id
-    JOIN go_terms g ON pgt.go_term_id = g.id
-    JOIN species s ON p.species_id = s.id
-    WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
-    """
-    result = conn.execute(query, [protein_ids, species_name]).fetchall()
-    
+def get_go_annotations(conn, ids, species_name, id_type='protein'):
+    if id_type == 'protein':
+        query = """
+        SELECT p.id AS id, p.name AS name, g.id AS go_id, g.function, p.link
+        FROM proteins p
+        JOIN protein_go_terms pgt ON p.id = pgt.protein_id
+        JOIN go_terms g ON pgt.go_term_id = g.id
+        JOIN species s ON p.species_id = s.id
+        WHERE p.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
+        """
+    elif id_type == 'gene':
+        query = """
+        SELECT gn.id AS id, gn.name AS name, gt.id AS go_id, gt.function, gn.link
+        FROM genes gn
+        JOIN gene_go_terms ggt ON gn.id = ggt.gene_id
+        JOIN go_terms gt ON ggt.go_term_id = gt.id
+        JOIN species s ON gn.species_id = s.id
+        WHERE gn.id IN (SELECT CAST(unnest(?) AS VARCHAR)) AND s.name = ?
+        """
+    else:
+        raise ValueError("Invalid id_type. Must be 'protein' or 'gene'.")
+
+    result = conn.execute(query, [ids, species_name]).fetchall()
+
     annotations = {}
     for row in result:
-        protein_id, protein_name, go_id, function, link = row
-        if protein_id not in annotations:
-            annotations[protein_id] = {
-                'Protein Name': protein_name,
+        id_, name, go_id, function, link = row
+        if id_ not in annotations:
+            annotations[id_] = {
+                'Name': name,
                 'GO ID': [],
                 'Function': [],
                 'Link': link
             }
-        annotations[protein_id]['GO ID'].append(go_id)
-        annotations[protein_id]['Function'].append(function)
-    
+        annotations[id_]['GO ID'].append(go_id)
+        annotations[id_]['Function'].append(function)
+
     return annotations
 
 
