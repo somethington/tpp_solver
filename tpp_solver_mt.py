@@ -368,6 +368,7 @@ def get_replicate_data(csv_data, filtered_data):
                         continue
     
     return replicate_data
+
 def fit_and_plot_replicates(data_dict, selected_temp, normalize_data, r2_threshold):
     """
     Fit curves and create plots for all replicates with progress bar.
@@ -688,14 +689,14 @@ def compare_melting_points_violin(averaged_table):
 
 def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2):
     """
-    Perform Mann-Whitney U test on melting points between treatments for each protein.
+    Perform Mann-Whitney U test on melting points between treatments for each protein,
+    with Benjamini-Hochberg FDR correction.
     
     Args:
         replicate_table (pd.DataFrame): Table containing replicate-level melting points
         treatment_1 (str): Name of first treatment (control)
         treatment_2 (str): Name of second treatment
     """
-
     
     st.subheader("Statistical Analysis of Protein Melting Point Shifts")
     st.write(f"Comparing {treatment_2} vs {treatment_1} (control)")
@@ -705,6 +706,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     
     # Store results
     results = []
+    raw_p_values = []  # Store raw p-values for FDR correction
     
     # Process each protein
     for protein in proteins:
@@ -737,12 +739,12 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
                 'ΔTm': f"{median_diff:.2f}",
                 'P-value': p_value,
                 'Effect Size': effect_size,
-                'Significant': p_value < 0.05,
                 'n_control': len(control_data),
                 'n_treatment': len(treatment_data),
                 '_sort_tm': abs(median_diff),  # Hidden column for sorting
                 '_sort_p': p_value,  # Hidden column for sorting
             })
+            raw_p_values.append(p_value)
             
         except Exception as e:
             st.warning(f"Could not analyze protein {protein}: {str(e)}")
@@ -754,10 +756,27 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     # Convert to DataFrame
     results_df = pd.DataFrame(results)
     
-    # Add significance stars
-    results_df['Significance'] = results_df['P-value'].apply(
-        lambda p: '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
-    )
+    # Calculate Benjamini-Hochberg FDR
+    sorted_p_idx = np.argsort(raw_p_values)
+    p_values = np.array(raw_p_values)[sorted_p_idx]
+    n_tests = len(p_values)
+    
+    # Calculate FDR
+    fdr_values = np.zeros_like(p_values)
+    for i, p_value in enumerate(p_values):
+        fdr_values[i] = p_value * n_tests / (i + 1)
+    
+    # Correct for monotonicity
+    for i in range(len(fdr_values)-2, -1, -1):
+        fdr_values[i] = min(fdr_values[i], fdr_values[i+1])
+    
+    # Return to original order
+    inverse_sorted_p_idx = np.argsort(sorted_p_idx)
+    fdr_values = fdr_values[inverse_sorted_p_idx]
+    
+    # Add FDR values to results
+    results_df['FDR'] = fdr_values
+    results_df['Significant'] = results_df['FDR'] < 0.05
     
     # Sort by absolute ΔTm and significance
     results_df = results_df.sort_values(
@@ -765,19 +784,25 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
         ascending=[False, False, True]
     )
     
+    # Add significance stars based on FDR
+    results_df['Significance'] = results_df['FDR'].apply(
+        lambda p: '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
+    )
+    
     # Remove hidden sorting columns
     display_df = results_df.drop(['_sort_tm', '_sort_p'], axis=1)
     
     # Display summary of significant changes
     n_significant = results_df['Significant'].sum()
-    st.write(f"Found {n_significant} proteins with significant changes (p < 0.05) out of {len(results_df)} tested proteins.")
+    st.write(f"Found {n_significant} proteins with significant changes (FDR < 0.05) out of {len(results_df)} tested proteins.")
     
     # Create interactive table
     st.write("### Detailed Results")
-    st.write("Click column headers to sort. Significance levels: * p<0.05, ** p<0.01, *** p<0.001, ns: not significant")
+    st.write("Click column headers to sort. Significance levels: * FDR<0.05, ** FDR<0.01, *** FDR<0.001, ns: not significant")
     
-    # Format p-values for display
+    # Format p-values and FDR for display
     display_df['P-value'] = display_df['P-value'].apply(lambda x: f"{x:.2e}" if x < 0.001 else f"{x:.3f}")
+    display_df['FDR'] = display_df['FDR'].apply(lambda x: f"{x:.2e}" if x < 0.001 else f"{x:.3f}")
     display_df['Effect Size'] = display_df['Effect Size'].apply(lambda x: f"{x:.3f}")
     
     # Display table with highlighting
@@ -790,8 +815,8 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     
     # Add scatter plot
     fig.add_trace(go.Scatter(
-        x=[float(x) for x in results_df['ΔTm']],
-        y=-np.log10(results_df['P-value']),
+        x=[float(x.strip()) for x in results_df['ΔTm']],
+        y=-np.log10(results_df['FDR']),  # Changed from p-value to FDR
         mode='markers',
         marker=dict(
             color=results_df['Significant'].map({True: 'red', False: 'gray'}),
@@ -802,7 +827,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
         hovertemplate=(
             "<b>%{text}</b><br>" +
             "ΔTm: %{x:.2f}°C<br>" +
-            "-log10(p): %{y:.2f}<br>" +
+            "-log10(FDR): %{y:.2f}<br>" +  # Updated label
             "<extra></extra>"
         )
     ))
@@ -813,13 +838,13 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     fig.update_layout(
         title="Volcano Plot of Melting Point Changes",
         xaxis_title="ΔTm (°C)",
-        yaxis_title="-log10(p-value)",
+        yaxis_title="-log10(FDR)",  # Updated label
         template='plotly_white',
         showlegend=False
     )
     
     st.plotly_chart(fig)
-
+    
 def go_annotation():   
     st.title("GO Annotation Tool")
 
