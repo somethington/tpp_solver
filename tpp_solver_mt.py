@@ -504,7 +504,7 @@ def perform_transformations_and_shapiro_test(averaged_table, transformations_to_
         # Perform Shapiro-Wilk test
         stat, p_value = shapiro(transformed_data)
         
-        st.write(f"Shapiro-Wilk test results:")
+        st.write("Shapiro-Wilk test results:")
         st.write(f"- Test statistic: {stat:.4f}")
         st.write(f"- p-value: {p_value:.4f}")
         st.write(f"- {'Normally distributed' if p_value > 0.05 else 'Not normally distributed'}")
@@ -844,7 +844,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     )
     
     st.plotly_chart(fig)
-    
+
 def go_annotation():   
     st.title("GO Annotation Tool")
 
@@ -923,7 +923,7 @@ def save_figure_to_svg(name, fig):
     svg_io = io.BytesIO()
     fig.savefig(svg_io, format='svg', bbox_inches='tight')
     svg_io.seek(0)
-    plt.close(fig)
+    plt.close(fig)  # Ensure figure is closed immediately
     return name, svg_io.getvalue()
 
 def process_summary_tables(summary_table):
@@ -1238,7 +1238,11 @@ def analysis():
             if selected_temp is None and normalize_data:
                 st.warning("Please select a temperature for normalization.")
 
-            include_go_annotation = st.checkbox("Include GO annotation", value=False)
+            include_go_annotation = st.checkbox("Include GO annotation", value=False,
+            help="Adds Gene Ontology (GO) terms and functions to proteins in the analysis. "
+            "GO annotations help understand the biological roles, molecular functions, "
+            "and cellular locations of the proteins being studied."
+            )
 
             if include_go_annotation:
                 conn = duckdb.connect('multi_proteome_go.duckdb')
@@ -1251,9 +1255,27 @@ def analysis():
             treatments = list(set(metadata['Treatment']))
 
             with st.expander("Data Visualization Options"):
-                show_distribution = st.checkbox("Show Distribution of Melting Points", value=False)
-                show_violin_plot = st.checkbox("Compare Melting Points Between Treatments (Violin Plot)", value=False)
-                show_statistics = st.checkbox("Perform Statistical Analysis", value=False)
+                show_distribution = st.checkbox(
+                    "Show Distribution of Melting Points",
+                    value=False,
+                    help="Displays a histogram and density plot showing the overall distribution of melting points across all proteins. "
+                        "This helps visualize the spread and central tendency of your melting point data."
+                )
+                
+                show_violin_plot = st.checkbox(
+                    "Compare Melting Points Between Treatments (Violin Plot)",
+                    value=False,
+                    help="Creates an interactive violin plot comparing melting point distributions between treatments. "
+                        "The plot includes individual data points and shows the shape, median, and quartiles of the distribution for each treatment."
+                )
+                
+                show_statistics = st.checkbox(
+                    "Mann-Whitney and Benjamini-Hochberg",
+                    value=False,
+                    help="Performs Mann-Whitney U tests to compare melting points between treatments for each protein, "
+                        "with Benjamini-Hochberg correction for multiple testing. Generates a volcano plot and interactive table "
+                        "showing significant changes in protein stability between conditions."
+                )
                 
                 # Treatment selection for any analysis that needs it
                 treatment_selection = show_statistics or st.session_state.visualize_go_ids
@@ -1276,11 +1298,14 @@ def analysis():
                         key='treatment_2'
                     )
     
-            if include_go_annotation:
-                visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False)
-                if visualize_go_ids:
-                    st.session_state['threshold'] = st.number_input("ΔTm threshold for GO ID visualization", value=4.0, step=0.1)
-                    st.session_state.visualize_go_ids = visualize_go_ids
+                if include_go_annotation:
+                    visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False,
+                    help="Creates a bar chart showing the most frequent GO terms for proteins with significant "
+                    "melting point changes. Helps identify which biological processes or molecular functions "
+                    "are most affected by the treatment.")
+                    if visualize_go_ids:
+                        st.session_state['threshold'] = st.number_input("ΔTm threshold for GO ID visualization", value=4.0, step=0.1)
+                        st.session_state.visualize_go_ids = visualize_go_ids
 
 
             st.session_state.r2_threshold = st.slider(
@@ -1292,24 +1317,57 @@ def analysis():
             )
 
             with st.expander("Shapiro-Wilk Normality Test"):
-                perform_shapiro = st.checkbox("Perform Shapiro-Wilk Test", value=False)
-                
-                if perform_shapiro:
-                    st.subheader("Normality Test Selection")
-                    log_transform = st.checkbox("Log Transformation", value=True)
-                    sqrt_transform = st.checkbox("Square Root Transformation", value=True)
-                    boxcox_transform = st.checkbox("Box-Cox Transformation", value=True)
-                    yeojohnson_transform = st.checkbox("Yeo-Johnson Transformation", value=True)
+                perform_shapiro = st.checkbox(
+                    "Perform Shapiro-Wilk Test",
+                    value=False,
+                    help="Tests whether the ΔTm (melting point differences) follow a normal distribution. "
+                        "The test is performed on the original data and selected transformations to identify "
+                        "which form of the data best approximates normality."
+                )
 
-                    transformations_to_apply = []
-                    if log_transform:
-                        transformations_to_apply.append("Log")
-                    if sqrt_transform:
-                        transformations_to_apply.append("Square Root")
-                    if boxcox_transform:
-                        transformations_to_apply.append("Box-Cox")
-                    if yeojohnson_transform:
-                        transformations_to_apply.append("Yeo-Johnson")
+                st.subheader("Normality Test Selection")
+                log_transform = st.checkbox(
+                    "Log Transformation",
+                    value=False,
+                    disabled=not perform_shapiro,
+                    help="Applies natural logarithm to the data. Useful for right-skewed distributions "
+                        "and when the data spans multiple orders of magnitude."
+                )
+
+                sqrt_transform = st.checkbox(
+                    "Square Root Transformation",
+                    value=False,
+                    disabled=not perform_shapiro,
+                    help="Takes the square root of the data. A milder transformation than log, "
+                        "useful for right-skewed data and count data."
+                )
+
+                boxcox_transform = st.checkbox(
+                    "Box-Cox Transformation",
+                    value=False,
+                    disabled=not perform_shapiro,
+                    help="A family of power transformations that includes log and square root as special cases. "
+                        "Automatically finds the optimal power parameter to make data as normal as possible. "
+                        "Only works with positive values."
+                )
+
+                yeojohnson_transform = st.checkbox(
+                    "Yeo-Johnson Transformation",
+                    value=False,
+                    disabled=not perform_shapiro,
+                    help="Similar to Box-Cox but can handle negative values. A more flexible transformation "
+                        "that works well with data containing zeros or negative numbers."
+                )
+
+                transformations_to_apply = []
+                if log_transform:
+                    transformations_to_apply.append("Log")
+                if sqrt_transform:
+                    transformations_to_apply.append("Square Root")
+                if boxcox_transform:
+                    transformations_to_apply.append("Box-Cox")
+                if yeojohnson_transform:
+                    transformations_to_apply.append("Yeo-Johnson")
 
                 if st.button("Apply Shapiro-Wilk Test Settings"):
                     st.session_state.perform_shapiro = perform_shapiro
@@ -1390,21 +1448,29 @@ def analysis():
 
                 start_time = time.time()
 
-                with st.spinner('Preparing SVG files for download...'):
-
+                with st.spinner('Preparing files for download...'):
+                    # Generate standardized filename
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    zip_filename = f"TPP_analysis_{timestamp}.zip"
+                    
+                    # Create a single zip buffer for all files
                     zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:  # Changed to ZIP_STORED:
-                        # Add SVG files
-                        for protein, fig in figures.items():
-                            svg_io = io.BytesIO()
-                            fig.savefig(svg_io, format='svg', bbox_inches='tight')
-                            svg_io.seek(0)
-                            zip_file.writestr(f"figures/{protein}.svg", svg_io.getvalue())
-                            plt.close(fig)
+                    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:
+                        # Process figures in parallel using multiprocessing
+                        with mp.Pool(processes=mp.cpu_count()) as pool:
+                            svg_files = pool.starmap(
+                                save_figure_to_svg,
+                                [(name, fig) for name, fig in figures.items()]
+                            )
+                            
+                            # Add SVG files to zip
+                            for name, svg_data in svg_files:
+                                zip_file.writestr(f"figures/{name}.svg", svg_data)
+                                plt.close()  # Ensure figure is closed
                         
-                        # Add both summary tables
+                        # Add summary tables
                         summary_csv = io.StringIO()
-                        summary_table.to_csv(summary_csv, index=False)
+                        replicate_table.to_csv(summary_csv, index=False)
                         zip_file.writestr("data/summary_table.csv", summary_csv.getvalue())
                         
                         averaged_csv = io.StringIO()
@@ -1414,12 +1480,12 @@ def analysis():
                 end_time = time.time()
                 figure_save_time = end_time - start_time
 
-                st.write(f"Time taken to save figures: {figure_save_time:.2f} seconds")
+                st.write(f"Time taken to save files: {figure_save_time:.2f} seconds")
 
                 st.download_button(
                     label="Download Results",
                     data=zip_buffer.getvalue(),
-                    file_name="analysis_results.zip",
+                    file_name=zip_filename,
                     mime="application/zip"
                 )
 
