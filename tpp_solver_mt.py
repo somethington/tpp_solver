@@ -845,53 +845,93 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     
     st.plotly_chart(fig)
 
-def go_annotation():   
-    st.title("GO Annotation Tool")
-
+def get_species_list():
+    """
+    Get list of available species from the database.
+    
+    Returns:
+        list: List of species names
+    """
     conn = duckdb.connect('multi_proteome_go.duckdb')
+    try:
+        species = conn.execute("SELECT name FROM species").fetchall()
+        species_names = [s[0] for s in species]
+        return species_names
+    finally:
+        conn.close()
+
+def annotate_proteins(protein_data, protein_id_column, selected_species):
+    """
+    Add GO annotations to a protein dataset.
+    
+    Args:
+        protein_data (pd.DataFrame): DataFrame containing protein IDs
+        protein_id_column (str): Name of column containing protein IDs
+        selected_species (str): Name of selected species
+        
+    Returns:
+        pd.DataFrame: DataFrame with added GO annotations
+    """
+    conn = duckdb.connect('multi_proteome_go.duckdb')
+    try:
+        with st.spinner("Adding GO annotations..."):
+            protein_ids = protein_data[protein_id_column].astype(str).tolist()
+            annotations = get_go_annotations(conn, protein_ids, selected_species)
+            
+            # Add annotation columns
+            protein_data['GO ID'] = protein_data[protein_id_column].apply(
+                lambda pid: ';'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+            )
+            protein_data['Function'] = protein_data[protein_id_column].apply(
+                lambda pid: ';'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+            )
+            protein_data['Protein Name'] = protein_data[protein_id_column].apply(
+                lambda pid: annotations.get(pid, {'Protein Name': 'NA'})['Protein Name']
+            )
+            protein_data['Link'] = protein_data[protein_id_column].apply(
+                lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+            )
+            
+            return protein_data
+    finally:
+        conn.close()
+
+def go_annotation():
+    """
+    Standalone GO annotation interface.
+    """
+    st.title("GO Annotation Tool")
 
     protein_csv = st.file_uploader("Upload Protein CSV file", type=['csv'])
 
     if protein_csv is not None:
-        protein_data = pd.read_csv(protein_csv)
-        st.write("Preview of uploaded data:")
-        st.dataframe(protein_data.head())
+        try:
+            protein_data = pd.read_csv(protein_csv)
+            st.write("Preview of uploaded data:")
+            st.dataframe(protein_data.head())
 
-        protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
+            protein_id_column = st.selectbox("Select the column containing Protein IDs", protein_data.columns)
 
-        if protein_id_column:
-            species = conn.execute("SELECT name FROM species").fetchall()
-            species_names = [s[0] for s in species]
-            selected_species = st.selectbox("Select species for GO annotation", species_names)
+            if protein_id_column:
+                species_names = get_species_list()
+                selected_species = st.selectbox("Select species for GO annotation", species_names)
 
-            if st.button("Start Annotation"):
-                protein_ids = protein_data[protein_id_column].astype(str).tolist()
+                if st.button("Start Annotation"):
+                    annotated_data = annotate_proteins(protein_data, protein_id_column, selected_species)
+                    
+                    st.subheader("Updated CSV Data with GO Annotations")
+                    st.dataframe(annotated_data)
 
-                annotations = get_go_annotations(conn, protein_ids, selected_species)
-                protein_data['GO ID'] = protein_data[protein_id_column].apply(
-                    lambda pid: '|'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
-                )
-                protein_data['Function'] = protein_data[protein_id_column].apply(
-                    lambda pid: '|'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
-                )
-                protein_data['Link'] = protein_data[protein_id_column].apply(
-                    lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
-                )
-
-                st.subheader("Updated CSV Data with GO Annotations")
-                st.dataframe(protein_data)
-
-                csv = protein_data.to_csv(index=False)
-                st.download_button(
-                    label="Download Annotated CSV",
-                    data=csv,
-                    file_name=f"annotated_proteins_{selected_species.replace(' ', '_')}.csv",
-                    mime='text/csv',
-                )
-        else:
-            st.warning("Please select a column containing Protein IDs.")
-
-    conn.close()
+                    # Offer download of annotated data
+                    csv = annotated_data.to_csv(index=False)
+                    st.download_button(
+                        label="Download Annotated CSV",
+                        data=csv,
+                        file_name=f"annotated_proteins_{selected_species.replace(' ', '_')}.csv",
+                        mime='text/csv',
+                    )
+        except Exception as e:
+            st.error(f"Error processing file: {str(e)}")
 
 def save_results_to_zip(figures, replicate_table, averaged_table):
     zip_buffer = io.BytesIO()
@@ -1124,383 +1164,587 @@ def session_init():
     if 'threshold' not in st.session_state: 
         st.session_state.threshold = 4.0
 
+def validate_inputs(uploaded_tsv, uploaded_csv):
+    """
+    Validate user uploaded files and their content.
+    """
+    if uploaded_tsv is None or uploaded_csv is None:
+        st.warning("Please upload both TSV and CSV files before loading.")
+        return False
+        
+    if not uploaded_tsv.name.endswith('.tsv'):
+        st.error("First file must be a TSV file.")
+        return False
+        
+    if not uploaded_csv.name.endswith('.csv'):
+        st.error("Second file must be a CSV file.")
+        return False
+        
+    return True
+
+def clear_session_data():
+    """
+    Clear all session state data.
+    """
+    st.session_state.tsv_data = None
+    st.session_state.csv_data = None
+    st.session_state.edit_mode_tsv = False
+    st.session_state.edit_mode_csv = False
+
+def setup_data_loading_interface():
+    """
+    Create and handle the data loading interface elements.
+    """
+    uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
+    uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button('Load uploaded data'):
+            if validate_inputs(uploaded_tsv, uploaded_csv):
+                try:
+                    st.session_state.tsv_data = read_tsv_file(uploaded_tsv)
+                    st.session_state.csv_data = read_csv_file(uploaded_csv)
+                    st.success("Uploaded data loaded successfully!")
+                except Exception as e:
+                    st.error(f"Error loading files: {str(e)}")
+    
+    with col2:
+        handle_example_data()
+    
+    with col3:
+        if st.button('Clear loaded data'):
+            clear_session_data()
+            st.success("All loaded data has been cleared!")
+            
+    return uploaded_tsv, uploaded_csv
+
+def handle_example_data():
+    """
+    Handle loading of example data.
+    """
+    sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
+    if st.button('Load example data', help=sample_help):
+        try:
+            data_path = os.path.dirname(os.path.abspath(__file__))
+            tsv_path = os.path.join(data_path, "sample_data.tsv")
+            csv_path = os.path.join(data_path, "sample_metadata.csv")
+            
+            if not os.path.exists(tsv_path) or not os.path.exists(csv_path):
+                st.error("Sample data files not found!")
+                return
+                
+            st.session_state.tsv_data = read_tsv_file(tsv_path)
+            st.session_state.csv_data = read_csv_file(csv_path)
+            st.success("Sample data loaded successfully!")
+        except Exception as e:
+            st.error(f"Error loading sample data: {str(e)}")
+
+def display_data_tables():
+    """
+    Display and handle the TSV and CSV data tables.
+    """
+    if st.session_state.tsv_data is not None:
+        with st.expander("TSV Data", expanded=True):
+            handle_tsv_display()
+
+    if st.session_state.csv_data is not None:
+        with st.expander("CSV Metadata", expanded=True):
+            handle_csv_display()
+
+def handle_tsv_display():
+    """
+    Handle the TSV data display and editing interface.
+    """
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader("TSV Data")
+    with col2:
+        edit_button = st.button("Toggle Edit Mode (TSV)")
+
+    if edit_button:
+        st.session_state.edit_mode_tsv = not st.session_state.edit_mode_tsv
+
+    if st.session_state.edit_mode_tsv:
+        edited_tsv = st.data_editor(st.session_state.tsv_data, num_rows="dynamic")
+        if st.button("Save TSV Changes"):
+            st.session_state.tsv_data = edited_tsv
+            st.success("TSV data changes saved!")
+    else:
+        st.dataframe(st.session_state.tsv_data)
+
+def handle_csv_display():
+    """
+    Handle the CSV data display and editing interface.
+    """
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.subheader("CSV Metadata")
+    with col2:
+        edit_button = st.button("Toggle Edit Mode (CSV)")
+
+    if edit_button:
+        st.session_state.edit_mode_csv = not st.session_state.edit_mode_csv
+
+    if st.session_state.edit_mode_csv:
+        edited_csv = st.data_editor(st.session_state.csv_data, num_rows="dynamic")
+        if st.button("Save CSV Changes"):
+            st.session_state.csv_data = edited_csv
+            st.success("CSV metadata changes saved!")
+    else:
+        st.dataframe(st.session_state.csv_data)
+
+def setup_analysis_parameters(metadata):
+    """
+    Set up and handle analysis parameters interface.
+    """
+    max_allowed_zeros = st.number_input(
+        "Maximum number of missing values allowed",
+        min_value=0,
+        value=20,
+        step=1,
+        help="Maximum number of zero or missing values allowed per row before filtering"
+    )
+    
+    droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
+    st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
+    
+    normalize_data = handle_normalization(metadata)
+    
+    return max_allowed_zeros, normalize_data
+
+def handle_normalization(metadata):
+    """
+    Handle normalization settings interface.
+    """
+    normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
+    
+    if normalize_data:
+        unique_temperatures = sorted(set(metadata['Temperature']))
+        selected_temp = st.selectbox(
+            "Select the temperature to which data should be normalized:",
+            options=unique_temperatures,
+            index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) 
+            if st.session_state.get('selected_temp') in unique_temperatures else 0
+        )
+        st.session_state.normalize_data = normalize_data
+        st.session_state.selected_temp = selected_temp
+    else:
+        st.session_state.selected_temp = None
+
+    if st.session_state.selected_temp is None and normalize_data:
+        st.warning("Please select a temperature for normalization.")
+        
+    return normalize_data
+
+def setup_go_annotation():
+    """
+    Handle GO annotation setup interface.
+    """
+    include_go_annotation = st.checkbox(
+        "Include GO annotation",
+        value=False,
+        help="Adds Gene Ontology (GO) terms and functions to proteins in the analysis. "
+             "GO annotations help understand the biological roles, molecular functions, "
+             "and cellular locations of the proteins being studied."
+    )
+
+    selected_species = None
+    if include_go_annotation:
+        conn = duckdb.connect('multi_proteome_go.duckdb')
+        species = conn.execute("SELECT name FROM species").fetchall()
+        species_names = [s[0] for s in species]
+        selected_species = st.selectbox("Select species for GO annotation", species_names)
+        conn.close()
+
+    return include_go_annotation, selected_species
+
+def setup_visualization_options(treatments, include_go_annotation):
+    """
+    Create and handle visualization option interface.
+    """
+    with st.expander("Data Visualization Options"):
+        show_distribution = st.checkbox(
+            "Show Distribution of Melting Points",
+            value=False,
+            help="Displays a histogram and density plot showing the overall distribution of melting points across all proteins. "
+                 "This helps visualize the spread and central tendency of your melting point data."
+        )
+        
+        show_violin_plot = st.checkbox(
+            "Compare Melting Points Between Treatments (Violin Plot)",
+            value=False,
+            help="Creates an interactive violin plot comparing melting point distributions between treatments. "
+                 "The plot includes individual data points and shows the shape, median, and quartiles of the distribution for each treatment."
+        )
+        
+        show_statistics = st.checkbox(
+            "Mann-Whitney and Benjamini-Hochberg",
+            value=False,
+            help="Performs Mann-Whitney U tests to compare melting points between treatments for each protein, "
+                 "with Benjamini-Hochberg correction for multiple testing. Generates a volcano plot and interactive table "
+                 "showing significant changes in protein stability between conditions."
+        )
+        
+        treatment_1, treatment_2 = None, None
+        if show_statistics or st.session_state.visualize_go_ids:
+            treatment_1, treatment_2 = select_treatments(treatments)
+            
+        visualize_go_ids = handle_go_visualization(include_go_annotation)
+
+    return show_distribution, show_violin_plot, show_statistics, visualize_go_ids, treatment_1, treatment_2
+
+def handle_go_visualization(include_go_annotation):
+    """
+    Handle GO visualization interface.
+    """
+    visualize_go_ids = False
+    if include_go_annotation:
+        visualize_go_ids = st.checkbox(
+            "Visualize GO IDs with ΔTm > X°C",
+            value=False,
+            help="Creates a bar chart showing the most frequent GO terms for proteins with significant "
+                 "melting point changes. Helps identify which biological processes or molecular functions "
+                 "are most affected by the treatment."
+        )
+        if visualize_go_ids:
+            st.session_state['threshold'] = st.number_input(
+                "ΔTm threshold for GO ID visualization",
+                value=4.0,
+                step=0.1
+            )
+    st.session_state.visualize_go_ids = visualize_go_ids
+    return visualize_go_ids
+
+def setup_shapiro_wilk_test():
+    """
+    Handle Shapiro-Wilk test setup interface.
+    """
+    with st.expander("Shapiro-Wilk Normality Test"):
+        perform_shapiro = st.checkbox(
+            "Perform Shapiro-Wilk Test",
+            value=False,
+            help="Tests whether the ΔTm (melting point differences) follow a normal distribution. "
+                 "The test is performed on the original data and selected transformations to identify "
+                 "which form of the data best approximates normality."
+        )
+
+        transformations = handle_transformation_options(perform_shapiro)
+
+        if st.button("Apply Shapiro-Wilk Test Settings"):
+            st.session_state.perform_shapiro = perform_shapiro
+            if perform_shapiro:
+                st.session_state.transformations_to_apply = transformations
+            st.success("Shapiro-Wilk Test settings applied successfully!")
+            
+    return perform_shapiro, transformations
+
+def handle_transformation_options(perform_shapiro):
+    """
+    Handle transformation options interface.
+    """
+    st.subheader("Normality Test Selection")
+    transformations = []
+    
+    if st.checkbox("Log Transformation", value=False, disabled=not perform_shapiro,
+                  help="Applies natural logarithm to the data. Useful for right-skewed distributions "
+                       "and when the data spans multiple orders of magnitude."):
+        transformations.append("Log")
+        
+    if st.checkbox("Square Root Transformation", value=False, disabled=not perform_shapiro,
+                  help="Takes the square root of the data. A milder transformation than log, "
+                       "useful for right-skewed data and count data."):
+        transformations.append("Square Root")
+        
+    if st.checkbox("Box-Cox Transformation", value=False, disabled=not perform_shapiro,
+                  help="A family of power transformations that includes log and square root as special cases. "
+                       "Automatically finds the optimal power parameter to make data as normal as possible. "
+                       "Only works with positive values."):
+        transformations.append("Box-Cox")
+        
+    if st.checkbox("Yeo-Johnson Transformation", value=False, disabled=not perform_shapiro,
+                  help="Similar to Box-Cox but can handle negative values. A more flexible transformation "
+                       "that works well with data containing zeros or negative numbers."):
+        transformations.append("Yeo-Johnson")
+        
+    return transformations
+
+def handle_analysis_results(filtered_data, filtered_data_imputed, replicate_data, figures, 
+                          summary_table, show_statistics, show_distribution, show_violin_plot,
+                          perform_shapiro, include_go_annotation, visualize_go_ids,
+                          treatment_1, treatment_2):
+    """
+    Process and display analysis results.
+    """
+    st.subheader("Analysis Results")
+    st.write(f"Number of rows after filtering: {len(filtered_data)}")
+    
+    # Generate replicate and averaged tables
+    replicate_table, averaged_table = process_summary_tables(summary_table)
+    
+    # Display visualizations based on user selections
+    if show_statistics and treatment_1 and treatment_2:
+        perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
+
+    if show_distribution:
+        plot_melting_point_distribution(summary_table)
+
+    if show_violin_plot:
+        compare_melting_points_violin(averaged_table)
+
+    if perform_shapiro:
+        perform_transformations_and_shapiro_test(averaged_table, st.session_state['transformations_to_apply'])
+
+    if visualize_go_ids and include_go_annotation:
+        visualize_go_ids_with_dtm(averaged_table, st.session_state['threshold'], treatment_1, treatment_2)
+
+    # Create and offer download with timing information
+    with st.spinner('Preparing files for download...'):
+        start_time = time.time()
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        zip_filename = f"TPP_analysis_{timestamp}.zip"
+        
+        zip_buffer = create_results_zip(figures, summary_table)
+        
+        end_time = time.time()
+        st.write(f"Time taken to save files: {end_time - start_time:.2f} seconds")
+        
+        st.download_button(
+            label="Download Sigmoidal Curves",
+            data=zip_buffer.getvalue(),
+            file_name=zip_filename,
+            mime="application/zip"
+        )
+
+    # Display summary tables
+    display_summary_tables(summary_table)
+
+
+def add_go_annotations(summary_table, selected_species):
+    """
+    Add GO annotations to the summary table.
+    
+    Args:
+        summary_table (pd.DataFrame): DataFrame containing the protein analysis results
+        selected_species (str): Name of the selected species for GO annotation
+        
+    Returns:
+        pd.DataFrame: Summary table with added GO annotations
+    """
+    conn = duckdb.connect('multi_proteome_go.duckdb')
+    
+    with st.spinner("Adding GO annotations..."):
+        protein_ids = summary_table['protein'].tolist()
+        annotations = get_go_annotations(conn, protein_ids, selected_species)
+
+        # Add new columns for annotations
+        for index, row in summary_table.iterrows():
+            protein_id = row['protein']
+            annotation = annotations.get(protein_id, {
+                'Protein Name': 'NA',
+                'GO ID': ['NA'],
+                'Function': ['NA'],
+                'Link': 'NA'
+            })
+            summary_table.at[index, 'Protein Name'] = annotation['Protein Name']
+            summary_table.at[index, 'GO ID'] = ';'.join(annotation['GO ID'])
+            summary_table.at[index, 'Function'] = ';'.join(annotation['Function'])
+            summary_table.at[index, 'Link'] = annotation['Link']
+
+        st.write("GO annotations and protein names added to the summary table.")
+
+    conn.close()
+
+    # Reorder columns to keep consistent format
+    desired_order = ['protein', 'Protein Name', 'treatment', 'melting_point', 
+                    'R²', 'residuals', 'GO ID', 'Function', 'Link']
+    summary_table = summary_table[desired_order]
+    
+    return summary_table
+
+def display_summary_tables(summary_table):
+    """
+    Display the summary tables in tabs.
+    """
+    st.subheader("Summary Tables")
+    tab1, tab2 = st.tabs(["Original Data", "Averaged Data"])
+
+    with tab1:
+        st.dataframe(summary_table)
+
+    with tab2:
+        replicate_table, averaged_table = process_summary_tables(summary_table)
+        st.write("Averaged data showing mean values and standard deviations:")
+        st.dataframe(averaged_table)
+
+def select_treatments(treatments):
+    """
+    Handle treatment selection interface.
+    
+    Args:
+        treatments: List of available treatments
+    """
+    if 'treatment_1' not in st.session_state:
+        st.session_state['treatment_1'] = treatments[0]
+    if 'treatment_2' not in st.session_state:
+        st.session_state['treatment_2'] = treatments[1]
+
+    treatment_1 = st.selectbox(
+        "Select first treatment (control):",
+        treatments,
+        key='treatment_1'
+    )
+    treatment_2 = st.selectbox(
+        "Select second treatment:",
+        treatments,
+        key='treatment_2'
+    )
+    
+    return treatment_1, treatment_2
+
+def create_results_zip(figures, summary_table):
+    """
+    Create a zip file containing analysis results using optimized memory handling.
+    """
+    replicate_table, averaged_table = process_summary_tables(summary_table)
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:
+        # Process all SVG files in parallel
+        with mp.Pool(processes=mp.cpu_count()) as pool:
+            svg_files = pool.starmap(
+                save_figure_to_svg,
+                [(name, fig) for name, fig in figures.items()]
+            )
+            
+            # Write all files in a single zip operation
+            for name, svg_data in svg_files:
+                zip_file.writestr(f"figures/{name}.svg", svg_data)
+            
+            # Add summary tables
+            summary_csv = io.StringIO()
+            replicate_table.to_csv(summary_csv, index=False)
+            zip_file.writestr("data/summary_table.csv", summary_csv.getvalue())
+            
+            averaged_csv = io.StringIO()
+            averaged_table.to_csv(averaged_csv, index=False)
+            zip_file.writestr("data/averaged_summary.csv", averaged_csv.getvalue())
+    
+    return zip_buffer
+
 def analysis():
+    """
+    Main analysis function coordinating the entire workflow.
+    """
     st.title("TPP Analysis App")
     
     session_init()
 
-    uploaded_tsv = st.file_uploader("Upload TSV fragpipe output file", type=['tsv'])
-    uploaded_csv = st.file_uploader("Upload CSV metadata file", type=['csv'])
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        if st.button('Load uploaded data'):
-            if uploaded_tsv is not None and uploaded_csv is not None:
-                st.session_state.tsv_data = read_tsv_file(uploaded_tsv)
-                st.session_state.csv_data = read_csv_file(uploaded_csv)
-                st.success("Uploaded data loaded successfully!")
-            else:
-                st.warning("Please upload both TSV and CSV files before loading.")
-
-    with col2:
-        sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
-        if st.button('Load example data', help=sample_help):
-            data_path = os.path.dirname(os.path.abspath(__file__))
-            tsv_path = os.path.join(data_path, "sample_data.tsv")
-            csv_path = os.path.join(data_path, "sample_metadata.csv")
-            st.session_state.tsv_data = read_tsv_file(tsv_path)
-            st.session_state.csv_data = read_csv_file(csv_path)
-            st.success("Sample data loaded successfully!")
-
-    with col3:
-        if st.button('Clear loaded data'):
-            st.session_state.tsv_data = None
-            st.session_state.csv_data = None
-            st.session_state.edit_mode_tsv = False
-            st.session_state.edit_mode_csv = False
-            st.success("All loaded data has been cleared!")
+    # Set up data loading interface
+    uploaded_tsv, uploaded_csv = setup_data_loading_interface()
 
     if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
         st.info("TSV and CSV data are loaded and ready for analysis.")
-    else:
-        st.warning("Please load both TSV and CSV data to proceed with analysis.")
-
-    if st.session_state.tsv_data is not None:
-        with st.expander("TSV Data", expanded=True):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.subheader("TSV Data")
-            with col2:
-                edit_button = st.button("Toggle Edit Mode (TSV)")
-
-            if edit_button:
-                st.session_state.edit_mode_tsv = not st.session_state.edit_mode_tsv
-
-            if st.session_state.edit_mode_tsv:
-                edited_tsv = st.data_editor(st.session_state.tsv_data, num_rows="dynamic")
-                if st.button("Save TSV Changes"):
-                    st.session_state.tsv_data = edited_tsv
-                    st.success("TSV data changes saved!")
-            else:
-                st.dataframe(st.session_state.tsv_data)
-
-    if st.session_state.csv_data is not None:
-        with st.expander("CSV Metadata", expanded=True):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.subheader("CSV Metadata")
-            with col2:
-                edit_button = st.button("Toggle Edit Mode (CSV)")
-
-            if edit_button:
-                st.session_state.edit_mode_csv = not st.session_state.edit_mode_csv
-
-            if st.session_state.edit_mode_csv:
-                edited_csv = st.data_editor(st.session_state.csv_data, num_rows="dynamic")
-                if st.button("Save CSV Changes"):
-                    st.session_state.csv_data = edited_csv
-                    st.success("CSV metadata changes saved!")
-            else:
-                st.dataframe(st.session_state.csv_data)
-
-    if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
+        
+        # Display data tables
+        display_data_tables()
+        
+        # Setup analysis parameters
         st.subheader("Analysis Setup")
-
-        if 'r2_threshold' not in st.session_state:
-            st.session_state.r2_threshold = 0.8  # Default R² threshold
-
         metadata = extract_samples(st.session_state.csv_data)
-
+        
         if metadata is None:
             st.error("Failed to extract samples from metadata. Please check your CSV file.")
             return
-        else:
-            max_allowed_zeros = st.number_input("Maximum number of missing values allowed", min_value=0, value=20, step=1)
-            droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
-            st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
             
-            normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
-            
-            if normalize_data:
-                unique_temperatures = sorted(set(metadata['Temperature']))
-                selected_temp = st.selectbox(
-                    "Select the temperature to which data should be normalized:",
-                    options=unique_temperatures,
-                    index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) if st.session_state.get('selected_temp') in unique_temperatures else 0
-                )
-                st.session_state.normalize_data = normalize_data
-                st.session_state.selected_temp = selected_temp
+        max_allowed_zeros, normalize_data = setup_analysis_parameters(metadata)
+        
+        # Setup GO annotation
+        include_go_annotation, selected_species = setup_go_annotation()
+        
+        # Get treatments list
+        treatments = list(set(metadata['Treatment']))
+        
+        # Setup visualization options
+        show_distribution, show_violin_plot, show_statistics, visualize_go_ids, treatment_1, treatment_2 = \
+            setup_visualization_options(treatments, include_go_annotation)
+        
+        # Setup Shapiro-Wilk test
+        perform_shapiro, transformations = setup_shapiro_wilk_test()
+        
+        # R² threshold setup
+        st.session_state.r2_threshold = st.slider(
+            "Set the R² threshold for filtering proteins:",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.get('r2_threshold', 0.8),
+            step=0.01,
+            help="Minimum R² value required for accepting protein curve fits"
+        )
 
-            else:
-                selected_temp = None
-
-            if selected_temp is None and normalize_data:
-                st.warning("Please select a temperature for normalization.")
-
-            include_go_annotation = st.checkbox("Include GO annotation", value=False,
-            help="Adds Gene Ontology (GO) terms and functions to proteins in the analysis. "
-            "GO annotations help understand the biological roles, molecular functions, "
-            "and cellular locations of the proteins being studied."
-            )
-
-            if include_go_annotation:
-                conn = duckdb.connect('multi_proteome_go.duckdb')
-                species = conn.execute("SELECT name FROM species").fetchall()
-                species_names = [s[0] for s in species]
-                selected_species = st.selectbox("Select species for GO annotation", species_names)
-                conn.close()
-
-            # Get the list of treatments from metadata
-            treatments = list(set(metadata['Treatment']))
-
-            with st.expander("Data Visualization Options"):
-                show_distribution = st.checkbox(
-                    "Show Distribution of Melting Points",
-                    value=False,
-                    help="Displays a histogram and density plot showing the overall distribution of melting points across all proteins. "
-                        "This helps visualize the spread and central tendency of your melting point data."
+        # Start analysis button
+        if st.button("Start Analysis"):
+            try:
+                # Filter and process data
+                filtered_data, ceiling_rand = filter_and_lowest_float(
+                    st.session_state.tsv_data,
+                    metadata['Samples'],
+                    max_allowed_zeros
                 )
                 
-                show_violin_plot = st.checkbox(
-                    "Compare Melting Points Between Treatments (Violin Plot)",
-                    value=False,
-                    help="Creates an interactive violin plot comparing melting point distributions between treatments. "
-                        "The plot includes individual data points and shows the shape, median, and quartiles of the distribution for each treatment."
+                filtered_data_imputed = impute_filtered_data(
+                    filtered_data.copy(),
+                    metadata['Samples'],
+                    ceiling_rand
                 )
                 
-                show_statistics = st.checkbox(
-                    "Mann-Whitney and Benjamini-Hochberg",
-                    value=False,
-                    help="Performs Mann-Whitney U tests to compare melting points between treatments for each protein, "
-                        "with Benjamini-Hochberg correction for multiple testing. Generates a volcano plot and interactive table "
-                        "showing significant changes in protein stability between conditions."
+                replicate_data = get_replicate_data(
+                    st.session_state.csv_data,
+                    filtered_data_imputed
                 )
                 
-                # Treatment selection for any analysis that needs it
-                treatment_selection = show_statistics or st.session_state.visualize_go_ids
-                
-                if treatment_selection:
-                    # Initialize treatments in session state if needed
-                    if 'treatment_1' not in st.session_state:
-                        st.session_state['treatment_1'] = treatments[0]
-                    if 'treatment_2' not in st.session_state:
-                        st.session_state['treatment_2'] = treatments[1]
-
-                    treatment_1 = st.selectbox(
-                        "Select first treatment (control):",
-                        treatments,
-                        key='treatment_1'
+                # Fit curves and generate figures
+                with st.spinner('Processing data and generating figures...'):
+                    start_time = time.time()
+                    figures, summary_table = fit_and_plot_replicates(
+                        replicate_data,
+                        st.session_state.selected_temp,
+                        st.session_state.normalize_data,
+                        st.session_state.r2_threshold
                     )
-                    treatment_2 = st.selectbox(
-                        "Select second treatment:",
-                        treatments,
-                        key='treatment_2'
-                    )
-    
-                if include_go_annotation:
-                    visualize_go_ids = st.checkbox("Visualize GO IDs with ΔTm > X°C", value=False,
-                    help="Creates a bar chart showing the most frequent GO terms for proteins with significant "
-                    "melting point changes. Helps identify which biological processes or molecular functions "
-                    "are most affected by the treatment.")
-                    if visualize_go_ids:
-                        st.session_state['threshold'] = st.number_input("ΔTm threshold for GO ID visualization", value=4.0, step=0.1)
-                        st.session_state.visualize_go_ids = visualize_go_ids
-
-
-            st.session_state.r2_threshold = st.slider(
-                "Set the R² threshold for filtering proteins:",
-                min_value=0.0,
-                max_value=1.0,
-                value=st.session_state.r2_threshold,
-                step=0.01,
-            )
-
-            with st.expander("Shapiro-Wilk Normality Test"):
-                perform_shapiro = st.checkbox(
-                    "Perform Shapiro-Wilk Test",
-                    value=False,
-                    help="Tests whether the ΔTm (melting point differences) follow a normal distribution. "
-                        "The test is performed on the original data and selected transformations to identify "
-                        "which form of the data best approximates normality."
-                )
-
-                st.subheader("Normality Test Selection")
-                log_transform = st.checkbox(
-                    "Log Transformation",
-                    value=False,
-                    disabled=not perform_shapiro,
-                    help="Applies natural logarithm to the data. Useful for right-skewed distributions "
-                        "and when the data spans multiple orders of magnitude."
-                )
-
-                sqrt_transform = st.checkbox(
-                    "Square Root Transformation",
-                    value=False,
-                    disabled=not perform_shapiro,
-                    help="Takes the square root of the data. A milder transformation than log, "
-                        "useful for right-skewed data and count data."
-                )
-
-                boxcox_transform = st.checkbox(
-                    "Box-Cox Transformation",
-                    value=False,
-                    disabled=not perform_shapiro,
-                    help="A family of power transformations that includes log and square root as special cases. "
-                        "Automatically finds the optimal power parameter to make data as normal as possible. "
-                        "Only works with positive values."
-                )
-
-                yeojohnson_transform = st.checkbox(
-                    "Yeo-Johnson Transformation",
-                    value=False,
-                    disabled=not perform_shapiro,
-                    help="Similar to Box-Cox but can handle negative values. A more flexible transformation "
-                        "that works well with data containing zeros or negative numbers."
-                )
-
-                transformations_to_apply = []
-                if log_transform:
-                    transformations_to_apply.append("Log")
-                if sqrt_transform:
-                    transformations_to_apply.append("Square Root")
-                if boxcox_transform:
-                    transformations_to_apply.append("Box-Cox")
-                if yeojohnson_transform:
-                    transformations_to_apply.append("Yeo-Johnson")
-
-                if st.button("Apply Shapiro-Wilk Test Settings"):
-                    st.session_state.perform_shapiro = perform_shapiro
-                    if perform_shapiro:
-                        st.session_state.transformations_to_apply = transformations_to_apply
-                    st.success("Shapiro-Wilk Test settings applied successfully!")
-
-            if st.button("Start Analysis"):
-                tsv_data = st.session_state.tsv_data
-                csv_data = st.session_state.csv_data
-
-                filtered_data, ceiling_rand = filter_and_lowest_float(tsv_data, metadata['Samples'], max_allowed_zeros)
-
-                st.subheader("Analysis Results")
-                st.write(f"Number of rows after filtering: {len(filtered_data)}")
-                st.write(f"Number of rows removed: {len(tsv_data) - len(filtered_data)}")
-                st.write(f"Lowest non-zero float number found (after filtering): {ceiling_rand}")
-
-                filtered_data_imputed = impute_filtered_data(filtered_data.copy(), metadata['Samples'], ceiling_rand)
-                
-                replicate_data = get_replicate_data(csv_data, filtered_data_imputed)
-
-                start_time = time.time()
-                figures, summary_table = fit_and_plot_replicates(replicate_data, st.session_state.selected_temp, 
-                                               st.session_state.normalize_data, st.session_state.r2_threshold)
-                end_time = time.time()
-                figure_generation_time = end_time - start_time
-
-                st.write(f"Time taken to generate figures: {figure_generation_time:.2f} seconds |  {len(figures)} figures generated")
-
-                if include_go_annotation:
-                    conn = duckdb.connect('multi_proteome_go.duckdb')
-                    with st.spinner("Adding GO annotations..."):
-                        protein_ids = summary_table['protein'].tolist()
-                        annotations = get_go_annotations(conn, protein_ids, selected_species)
-
-                        for index, row in summary_table.iterrows():
-                            protein_id = row['protein']
-                            annotation = annotations.get(protein_id, {
-                                'Protein Name': 'NA',
-                                'GO ID': ['NA'],
-                                'Function': ['NA'],
-                                'Link': 'NA'
-                            })
-                            summary_table.at[index, 'Protein Name'] = annotation['Protein Name']
-                            summary_table.at[index, 'GO ID'] = ';'.join(annotation['GO ID'])
-                            summary_table.at[index, 'Function'] = ';'.join(annotation['Function'])
-                            summary_table.at[index, 'Link'] = annotation['Link']
-
-                        st.write("GO annotations and protein names added to the summary table.")
-
-                    conn.close()
-
-                    desired_order = ['protein', 'Protein Name', 'treatment', 'melting_point', 'R²', 'residuals', 'GO ID', 'Function', 'Link']
-                    summary_table = summary_table[desired_order]
-                
-                # Generate both replicate and averaged tables
-                replicate_table, averaged_table = process_summary_tables(summary_table)
-
-
-                # Display data visualization section
-                st.subheader("Data Visualization")
-                
-                if show_statistics:
-                    perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
-
-                if show_distribution:
-                    plot_melting_point_distribution(summary_table)
-
-                if show_violin_plot:
-                    compare_melting_points_violin(averaged_table)
-
-                if st.session_state.perform_shapiro:
-                    perform_transformations_and_shapiro_test(averaged_table, st.session_state['transformations_to_apply'])
-
-                if st.session_state.visualize_go_ids and include_go_annotation:
-                    visualize_go_ids_with_dtm(averaged_table, st.session_state['threshold'], treatment_1, treatment_2)  
-
-                start_time = time.time()
-
-                with st.spinner('Preparing files for download...'):
-                    # Generate standardized filename
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    zip_filename = f"TPP_analysis_{timestamp}.zip"
+                    end_time = time.time()
                     
-                    # Create a single zip buffer for all files
-                    zip_buffer = io.BytesIO()
-                    with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:
-                        # Process figures in parallel using multiprocessing
-                        with mp.Pool(processes=mp.cpu_count()) as pool:
-                            svg_files = pool.starmap(
-                                save_figure_to_svg,
-                                [(name, fig) for name, fig in figures.items()]
-                            )
-                            
-                            # Add SVG files to zip
-                            for name, svg_data in svg_files:
-                                zip_file.writestr(f"figures/{name}.svg", svg_data)
-                                plt.close()  # Ensure figure is closed
-                        
-                        # Add summary tables
-                        summary_csv = io.StringIO()
-                        replicate_table.to_csv(summary_csv, index=False)
-                        zip_file.writestr("data/summary_table.csv", summary_csv.getvalue())
-                        
-                        averaged_csv = io.StringIO()
-                        averaged_table.to_csv(averaged_csv, index=False)
-                        zip_file.writestr("data/averaged_summary.csv", averaged_csv.getvalue())
-
-                end_time = time.time()
-                figure_save_time = end_time - start_time
-
-                st.write(f"Time taken to save files: {figure_save_time:.2f} seconds")
-
-                st.download_button(
-                    label="Download Results",
-                    data=zip_buffer.getvalue(),
-                    file_name=zip_filename,
-                    mime="application/zip"
+                    st.write(f"Time taken to generate figures: {end_time - start_time:.2f} seconds | "
+                            f"{len(figures)} figures generated")
+                
+                # Add GO annotations if requested
+                if include_go_annotation:
+                    summary_table = add_go_annotations(summary_table, selected_species)
+                
+                # Handle and display results
+                handle_analysis_results(
+                    filtered_data,
+                    filtered_data_imputed,
+                    replicate_data,
+                    figures,
+                    summary_table,
+                    show_statistics,
+                    show_distribution,
+                    show_violin_plot,
+                    perform_shapiro,
+                    include_go_annotation,
+                    visualize_go_ids,
+                    treatment_1,
+                    treatment_2
                 )
-
-                # Display both tables
-                st.subheader("Summary Tables")
-                tab1, tab2 = st.tabs(["Original Data", "Averaged Data"])
-
-                with tab1:
-                    st.dataframe(summary_table)
-
-                with tab2:
-                    st.write("Averaged data showing mean values and standard deviations:")
-                    st.dataframe(averaged_table)
-
-                plt.close('all')
+                
+            except Exception as e:
+                st.error(f"An error occurred during analysis: {str(e)}")
+                raise e
+    else:
+        st.warning("Please load both TSV and CSV data to proceed with analysis.")
 
 def main():
     st.set_page_config(
