@@ -62,16 +62,14 @@ def extract_samples(csv_data):
     }
 
 # Filter data and find lowest non-zero float in samples
-def filter_and_lowest_float(tsv_data, samples, max_zeroes_allowed):
+def filter_and_lowest_float(tsv_data, samples):
     missing_cols = set(samples) - set(tsv_data.columns)
     if missing_cols:
         raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV")
     
     selected_data = tsv_data[samples]
     num_data = selected_data.apply(pd.to_numeric, errors='coerce')
-
-    zero_counts = (num_data == 0).sum(axis=1)
-    filtered_data = tsv_data[zero_counts < max_zeroes_allowed]
+    filtered_data = tsv_data  # No filtering based on zeros anymore
 
     num_filtered_data = filtered_data[samples].apply(pd.to_numeric, errors='coerce')
     num_filtered_data = num_filtered_data.replace(0, np.nan)
@@ -1299,20 +1297,8 @@ def setup_analysis_parameters(metadata):
     """
     Set up and handle analysis parameters interface.
     """
-    max_allowed_zeros = st.number_input(
-        "Maximum number of missing values allowed",
-        min_value=0,
-        value=20,
-        step=1,
-        help="Maximum number of zero or missing values allowed per row before filtering"
-    )
-    
-    droppable_rows = count_invalid_rows(st.session_state.tsv_data, metadata["Samples"], max_allowed_zeros)
-    st.write(f"Number of rows with {max_allowed_zeros} or more missing values: {droppable_rows} (Will be dropped)")
-    
     normalize_data = handle_normalization(metadata)
-    
-    return max_allowed_zeros, normalize_data
+    return normalize_data
 
 def handle_normalization(metadata):
     """
@@ -1638,114 +1624,121 @@ def analysis():
     """
     Main analysis function coordinating the entire workflow.
     """
-    st.title("TPP Analysis App")
-    
-    session_init()
+    try:
+        st.title("TPP Analysis App")
+        
+        session_init()
 
-    # Set up data loading interface
-    uploaded_tsv, uploaded_csv = setup_data_loading_interface()
+        # Set up data loading interface
+        uploaded_tsv, uploaded_csv = setup_data_loading_interface()
 
-    if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
-        st.info("TSV and CSV data are loaded and ready for analysis.")
-        
-        # Display data tables
-        display_data_tables()
-        
-        # Setup analysis parameters
-        st.subheader("Analysis Setup")
-        metadata = extract_samples(st.session_state.csv_data)
-        
-        if metadata is None:
-            st.error("Failed to extract samples from metadata. Please check your CSV file.")
-            return
+        if st.session_state.tsv_data is not None and st.session_state.csv_data is not None:
+            st.info("TSV and CSV data are loaded and ready for analysis.")
             
-        max_allowed_zeros, normalize_data = setup_analysis_parameters(metadata)
-        
-        # Setup GO annotation
-        include_go_annotation, selected_species = setup_go_annotation()
-        
-        # Get treatments list
-        treatments = list(set(metadata['Treatment']))
-        
-        # Setup visualization options
-        show_distribution, show_violin_plot, show_statistics, visualize_go_ids, treatment_1, treatment_2 = \
-            setup_visualization_options(treatments, include_go_annotation)
-        
-        # Setup Shapiro-Wilk test
-        perform_shapiro, transformations = setup_shapiro_wilk_test()
-        
-        # R² threshold setup
-        st.session_state.r2_threshold = st.slider(
-            "Set the R² threshold for filtering proteins:",
-            min_value=0.0,
-            max_value=1.0,
-            value=st.session_state.get('r2_threshold', 0.8),
-            step=0.01,
-            help="Minimum R² value required for accepting protein curve fits"
-        )
+            # Display data tables
+            display_data_tables()
+            
+            # Setup analysis parameters
+            st.subheader("Analysis Setup")
+            metadata = extract_samples(st.session_state.csv_data)
+            
+            if metadata is None:
+                st.error("Failed to extract samples from metadata. Please check your CSV file.")
+                return
+                
+            normalize_data = setup_analysis_parameters(metadata)
+            
+            # Setup GO annotation
+            include_go_annotation, selected_species = setup_go_annotation()
+            
+            # Get treatments list
+            treatments = list(set(metadata['Treatment']))
+            
+            # Setup visualization options
+            show_distribution, show_violin_plot, show_statistics, visualize_go_ids, treatment_1, treatment_2 = \
+                setup_visualization_options(treatments, include_go_annotation)
+            
+            # Setup Shapiro-Wilk test
+            perform_shapiro, transformations = setup_shapiro_wilk_test()
+            
+            # R² threshold setup
+            st.session_state.r2_threshold = st.slider(
+                "Set the R² threshold for filtering proteins:",
+                min_value=0.0,
+                max_value=1.0,
+                value=st.session_state.get('r2_threshold', 0.8),
+                step=0.01,
+                help="Minimum R² value required for accepting protein curve fits"
+            )
 
-        # Start analysis button
-        if st.button("Start Analysis"):
-            try:
-                # Filter and process data
-                filtered_data, ceiling_rand = filter_and_lowest_float(
-                    st.session_state.tsv_data,
-                    metadata['Samples'],
-                    max_allowed_zeros
-                )
-                
-                filtered_data_imputed = impute_filtered_data(
-                    filtered_data.copy(),
-                    metadata['Samples'],
-                    ceiling_rand
-                )
-                
-                replicate_data = get_replicate_data(
-                    st.session_state.csv_data,
-                    filtered_data_imputed
-                )
-                
-                # Fit curves and generate figures
-                with st.spinner('Processing data and generating figures...'):
-                    start_time = time.time()
-                    figures, summary_table = fit_and_plot_replicates(
-                        replicate_data,
-                        st.session_state.selected_temp,
-                        st.session_state.normalize_data,
-                        st.session_state.r2_threshold
+            # Start analysis button
+            if st.button("Start Analysis"):
+                try:
+                    # Filter and process data
+                    filtered_data, ceiling_rand = filter_and_lowest_float(
+                        st.session_state.tsv_data,
+                        metadata['Samples']
                     )
-                    end_time = time.time()
                     
-                    st.write(f"Time taken to generate figures: {end_time - start_time:.2f} seconds | "
-                            f"{len(figures)} figures generated")
-                
-                # Add GO annotations if requested
-                if include_go_annotation:
-                    summary_table = add_go_annotations(summary_table, selected_species)
-                
-                # Handle and display results
-                handle_analysis_results(
-                    filtered_data,
-                    filtered_data_imputed,
-                    replicate_data,
-                    figures,
-                    summary_table,
-                    show_statistics,
-                    show_distribution,
-                    show_violin_plot,
-                    perform_shapiro,
-                    include_go_annotation,
-                    visualize_go_ids,
-                    treatment_1,
-                    treatment_2
-                )
-                
-            except Exception as e:
-                st.error(f"An error occurred during analysis: {str(e)}")
-                raise e
-    else:
-        st.warning("Please load both TSV and CSV data to proceed with analysis.")
-
+                    filtered_data_imputed = impute_filtered_data(
+                        filtered_data.copy(),
+                        metadata['Samples'],
+                        ceiling_rand
+                    )
+                    
+                    replicate_data = get_replicate_data(
+                        st.session_state.csv_data,
+                        filtered_data_imputed
+                    )
+                    
+                    # Fit curves and generate figures
+                    with st.spinner('Processing data and generating figures...'):
+                        start_time = time.time()
+                        figures, summary_table = fit_and_plot_replicates(
+                            replicate_data,
+                            st.session_state.selected_temp,
+                            st.session_state.normalize_data,
+                            st.session_state.r2_threshold
+                        )
+                        end_time = time.time()
+                        
+                        st.write(f"Time taken to generate figures: {end_time - start_time:.2f} seconds | "
+                                f"{len(figures)} figures generated")
+                    
+                    # Add GO annotations if requested
+                    if include_go_annotation:
+                        summary_table = add_go_annotations(summary_table, selected_species)
+                    
+                    # Handle and display results
+                    handle_analysis_results(
+                        filtered_data,
+                        filtered_data_imputed,
+                        replicate_data,
+                        figures,
+                        summary_table,
+                        show_statistics,
+                        show_distribution,
+                        show_violin_plot,
+                        perform_shapiro,
+                        include_go_annotation,
+                        visualize_go_ids,
+                        treatment_1,
+                        treatment_2
+                    )
+                except Exception as e:
+                    st.error(f"An error occurred during analysis: {str(e)}")
+                    raise e
+                finally:
+                    for fig in plt.get_fignums():
+                        plt.close(fig)
+        else:
+            st.warning("Please load both TSV and CSV data to proceed with analysis.")
+    except Exception as e:
+        st.error(f"An unexpected error occurred: {str(e)}")
+    finally:
+        # Clean up any remaining matplotlib figures
+        plt.close('all')
+        
 def main():
     st.set_page_config(
         page_title="TPP Solver",
