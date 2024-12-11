@@ -16,6 +16,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 import textwrap
 
+
 # File reading functions
 def read_tsv_file(file_path):
     return pd.read_csv(file_path, sep='\t')
@@ -154,6 +155,9 @@ def average_samples(sample_groups, filtered_data):
 def process_protein_replicates(args):
     """
     Process individual protein replicates for curve fitting with memory efficiency.
+    
+    Returns:
+        tuple: (protein, fig, summary_data) if successful, (None, None, None) if not
     """
     (
         protein,
@@ -244,7 +248,7 @@ def process_protein_replicates(args):
                 
                 # Create plot if we have any successful fits
                 if replicate_fits:
-                    if fig is None and ax is None:
+                    if fig is None:
                         fig, ax = plt.subplots(figsize=(10, 6))
                     
                     marker = next(markers)
@@ -253,52 +257,59 @@ def process_protein_replicates(args):
                     curpos = next(positions)
                     
                     # Plot each replicate
-                    for fit_data in replicate_fits:
+                    for i, fit_data in enumerate(replicate_fits):
+                        # Plot measured points
                         ax.scatter(
                             fit_data['temperatures'],
                             fit_data['values'],
                             marker=marker,
                             s=size,
                             alpha=alpha,
-                            label=f"{protein} {treatment} Rep{fit_data['replicate_num']} measured"
+                            label=f"{protein} {treatment} Rep{fit_data['replicate_num']} points"
                         )
-                        
+
                         temp_range = np.linspace(
                             min(fit_data['temperatures']),
                             max(fit_data['temperatures']),
                             100
                         )
-                        
+
+                        # Plot fitted line
                         ax.plot(
                             temp_range,
                             sigmoid(temp_range, *fit_data['popt']),
                             '--',
                             alpha=0.7,
-                            label=f"{protein} {treatment} Rep{fit_data['replicate_num']} fitted"
+                            label=f"{protein} {treatment} Rep{fit_data['replicate_num']} fitted (R²={fit_data['r_squared']:.2f})"
                         )
-                        
-                        melt_pt = sigmoid(fit_data['popt'][1], *fit_data['popt'])
-                        ax.scatter(fit_data['popt'][1], melt_pt, color='red', s=75, marker='^')
-                        ax.text(
-                            fit_data['popt'][1],
-                            melt_pt,
-                            f"{fit_data['popt'][1]:.2f}",
+
+                        # Calculate melting point
+                        melt_pt_temp = fit_data['popt'][1]
+                        melt_pt_val = sigmoid(melt_pt_temp, *fit_data['popt'])
+
+                        # Introduce a small horizontal offset based on replicate index
+                        x_offset = (i - (len(replicate_fits) - 1) / 2.0) * 0.2
+
+                        # Plot melting point marker with offset
+                        ax.scatter(
+                            melt_pt_temp + x_offset,
+                            melt_pt_val,
                             color='red',
-                            horizontalalignment=curpos,
+                            s=75,
+                            marker='^'
+                        )
+
+                        # Plot melting point text with offset
+                        ax.text(
+                            melt_pt_temp + x_offset,
+                            melt_pt_val,
+                            f"{melt_pt_temp:.2f}",
+                            color='red',
+                            horizontalalignment='center',
                             verticalalignment='bottom'
                         )
-                        
-                        ax.text(
-                            0.05,
-                            0.95 - y_offset,
-                            f"R² ({treatment} Rep{fit_data['replicate_num']}) = {fit_data['r_squared']:.2f}",
-                            transform=ax.transAxes,
-                            fontsize=12,
-                            verticalalignment='top',
-                            bbox=dict(boxstyle='round', facecolor='white', alpha=0.5)
-                        )
-                        y_offset += 0.07
-        
+
+        # Only set labels and title if we have a valid figure
         if fig is not None and ax is not None:
             ax.set_xlabel('Temperature')
             ax.set_ylabel('Intensity')
@@ -306,13 +317,12 @@ def process_protein_replicates(args):
             ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
             
             return protein, fig, summary_data
-        else:
-            return None, None, None
             
     except Exception as e:
         print(f"Unexpected error processing protein {protein}: {str(e)}")
-        return None, None, None
-      
+    
+    # Return consistent tuple if anything fails
+    return None, None, None
 def get_replicate_data(csv_data, filtered_data):
     """
     Memory-efficient organization of data by treatment, temperature, and replicate.
@@ -367,32 +377,47 @@ def get_replicate_data(csv_data, filtered_data):
     
     return replicate_data
 
-def fit_and_plot_replicates(data_dict, selected_temp, normalize_data, r2_threshold):
+def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_threshold):
     """
     Fit curves and create plots for all replicates with progress bar.
+    
+    Args:
+        replicate_data: Dictionary containing protein replicate data
+        selected_temp: Temperature for normalization
+        normalize_data: Whether to normalize the data
+        r2_threshold: R² threshold for curve fitting
+        
+    Returns:
+        tuple: (figures, summary_table)
     """
+    # Get unique proteins
     all_proteins = set()
-    for treatment in data_dict.values():
+    for treatment in replicate_data.values():
         all_proteins.update(treatment.keys())
     
+    # Create iterators for plot styling
     markers = itertools.cycle(['o', 's', '^', 'v'])
     sizes = itertools.cycle([50, 75, 100])
     alphas = itertools.cycle([1.0, 0.8, 0.6])
     positions = itertools.cycle(['left', 'right'])
     
-    # Create progress bar
+    # Initialize progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_proteins = len(all_proteins)
     
+    # Create process pool
     pool = mp.Pool(processes=mp.cpu_count())
     
+    # Prepare arguments for parallel processing
+    process_args = [
+        (protein, replicate_data, iter(markers), iter(sizes), iter(alphas), iter(positions), 
+         selected_temp, normalize_data, r2_threshold) 
+        for protein in all_proteins
+    ]
+    
     # Create an iterator for the results
-    results_iter = pool.imap(
-        process_protein_replicates,
-        [(protein, data_dict, iter(markers), iter(sizes), iter(alphas), iter(positions), 
-          selected_temp, normalize_data, r2_threshold) for protein in all_proteins]
-    )
+    results_iter = pool.imap(process_protein_replicates, process_args)
     
     # Process results with progress bar
     figures = {}
@@ -404,19 +429,20 @@ def fit_and_plot_replicates(data_dict, selected_temp, normalize_data, r2_thresho
         progress_bar.progress(progress)
         status_text.text(f"Processing protein {i+1} of {total_proteins}")
         
+        # Handle result
         if result is not None:
             protein, fig, summary_data = result
             if protein is not None and summary_data:
                 figures[protein] = fig
                 all_summary_data.extend(summary_data)
     
+    # Clean up
     pool.close()
     pool.join()
-    
-    # Clear progress bar and status text
     progress_bar.empty()
     status_text.empty()
     
+    # Create summary table
     if all_summary_data:
         summary_table = pd.DataFrame(all_summary_data)
         # Convert data types
@@ -430,9 +456,7 @@ def fit_and_plot_replicates(data_dict, selected_temp, normalize_data, r2_thresho
             columns=['protein', 'treatment', 'replicate', 'melting_point', 'R²', 'residuals']
         )
     
-    return figures, summary_table
-
-# Save all figures as SVGs and create a zip file
+    return figures, summary_table# Save all figures as SVGs and create a zip file
 def save_as_svg(figures, dataframe):
     memory_files = []
     for protein, fig in figures.items():
@@ -1459,7 +1483,8 @@ def handle_transformation_options(perform_shapiro):
 def handle_analysis_results(filtered_data, filtered_data_imputed, replicate_data, figures, 
                           summary_table, show_statistics, show_distribution, show_violin_plot,
                           perform_shapiro, include_go_annotation, visualize_go_ids,
-                          treatment_1, treatment_2):
+                          treatment_1, treatment_2, averaged_figures=None,
+                          averaged_summary_table=None):
     """
     Process and display analysis results.
     """
@@ -1492,21 +1517,62 @@ def handle_analysis_results(filtered_data, filtered_data_imputed, replicate_data
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         zip_filename = f"TPP_analysis_{timestamp}.zip"
         
-        zip_buffer = create_results_zip(figures, summary_table)
+        # Create zip file containing both replicate and averaged results
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:
+            # Save replicate-level figures
+            with mp.Pool(processes=mp.cpu_count()) as pool:
+                svg_files = pool.starmap(
+                    save_figure_to_svg,
+                    [(name, fig) for name, fig in figures.items()]
+                )
+            
+            for name, svg_data in svg_files:
+                zip_file.writestr(f"figures/replicates/{name}.svg", svg_data)
+
+            # Save averaged figures if provided
+            if averaged_figures is not None:
+                with mp.Pool(processes=mp.cpu_count()) as pool:
+                    avg_svg_files = pool.starmap(
+                        save_figure_to_svg,
+                        [(f"{name}_averaged", fig) for name, fig in averaged_figures.items()]
+                    )
+                
+                for name, svg_data in avg_svg_files:
+                    zip_file.writestr(f"figures/averaged/{name}.svg", svg_data)
+
+            # Save summary tables
+            summary_csv = io.StringIO()
+            replicate_table.to_csv(summary_csv, index=False)
+            zip_file.writestr("data/replicate_summary.csv", summary_csv.getvalue())
+
+            if averaged_summary_table is not None:
+                averaged_csv = io.StringIO()
+                averaged_summary_table.to_csv(averaged_csv, index=False)
+                zip_file.writestr("data/averaged_summary.csv", averaged_csv.getvalue())
         
         end_time = time.time()
         st.write(f"Time taken to save files: {end_time - start_time:.2f} seconds")
         
         st.download_button(
-            label="Download Sigmoidal Curves",
+            label="Download Analysis Results",
             data=zip_buffer.getvalue(),
             file_name=zip_filename,
             mime="application/zip"
         )
 
     # Display summary tables
-    display_summary_tables(summary_table)
+    st.subheader("Summary Tables")
+    tab1, tab2 = st.tabs(["Replicate Data", "Averaged Data"])
 
+    with tab1:
+        st.dataframe(replicate_table)
+
+    with tab2:
+        if averaged_summary_table is not None:
+            st.dataframe(averaged_summary_table)
+        else:
+            st.dataframe(averaged_table)
 
 def add_go_annotations(summary_table, selected_species):
     """
@@ -1590,35 +1656,240 @@ def select_treatments(treatments):
     
     return treatment_1, treatment_2
 
-def create_results_zip(figures, summary_table):
+def create_results_zip(figures, summary_table, averaged_figures=None, averaged_summary_table=None):
     """
-    Create a zip file containing analysis results using optimized memory handling.
-    """
-    replicate_table, averaged_table = process_summary_tables(summary_table)
+    Create a zip file containing analysis results including replicate and averaged figures.
     
+    Args:
+        figures (dict): Dictionary of replicate-level figures keyed by protein.
+        summary_table (pd.DataFrame): Summary table of replicate-level results.
+        averaged_figures (dict, optional): Dictionary of averaged figures keyed by (protein, treatment).
+        averaged_summary_table (pd.DataFrame, optional): Summary table of averaged data.
+        
+    Returns:
+        io.BytesIO: In-memory zip file containing all results.
+    """
+    # Process summary tables to get replicate and averaged versions
+    replicate_table, default_averaged_table = process_summary_tables(summary_table)
+
+    # If an averaged summary table is not provided, default to the one from process_summary_tables
+    if averaged_summary_table is None:
+        averaged_summary_table = default_averaged_table
+
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, mode='w', compression=zipfile.ZIP_STORED) as zip_file:
-        # Process all SVG files in parallel
+        # Save replicate-level figures
         with mp.Pool(processes=mp.cpu_count()) as pool:
             svg_files = pool.starmap(
                 save_figure_to_svg,
                 [(name, fig) for name, fig in figures.items()]
             )
+        
+        for name, svg_data in svg_files:
+            zip_file.writestr(f"figures/{name}.svg", svg_data)
+
+        # Save averaged figures if provided
+        if averaged_figures is not None:
+            with mp.Pool(processes=mp.cpu_count()) as pool:
+                avg_svg_files = pool.starmap(
+                    save_figure_to_svg,
+                    [(f"{protein}_{treatment}", fig) for (protein, treatment), fig in averaged_figures.items()]
+                )
             
-            # Write all files in a single zip operation
-            for name, svg_data in svg_files:
-                zip_file.writestr(f"figures/{name}.svg", svg_data)
-            
-            # Add summary tables
-            summary_csv = io.StringIO()
-            replicate_table.to_csv(summary_csv, index=False)
-            zip_file.writestr("data/summary_table.csv", summary_csv.getvalue())
-            
-            averaged_csv = io.StringIO()
-            averaged_table.to_csv(averaged_csv, index=False)
-            zip_file.writestr("data/averaged_summary.csv", averaged_csv.getvalue())
-    
+            # Write averaged figures into the figures/average directory
+            for name, svg_data in avg_svg_files:
+                zip_file.writestr(f"figures/average/{name}.svg", svg_data)
+
+        # Add replicate summary table
+        summary_csv = io.StringIO()
+        replicate_table.to_csv(summary_csv, index=False)
+        zip_file.writestr("data/summary_table.csv", summary_csv.getvalue())
+
+        # Add averaged summary table
+        averaged_csv = io.StringIO()
+        averaged_summary_table.to_csv(averaged_csv, index=False)
+        zip_file.writestr("data/averaged_summary.csv", averaged_csv.getvalue())
+
     return zip_buffer
+
+
+def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_data=True, r2_threshold=0.8, selected_species=None, include_go_annotation=False):
+    """
+    Fit sigmoidal curves to averaged data with spaced melting point markers.
+    """
+    figures = {}
+    summary_data = []
+    all_proteins = set()
+    
+    for treatment, proteins_dict in replicate_data.items():
+        for prot in proteins_dict.keys():
+            all_proteins.add(prot)
+
+    total_proteins = len(all_proteins)
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    st.write("Fitting averaged curves...")
+    
+    for i, protein in enumerate(all_proteins):
+        progress = (i + 1) / total_proteins
+        progress_bar.progress(progress)
+        status_text.text(f"Processing averaged curves: protein {i+1} of {total_proteins}")
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        successful_fits = []
+
+        for treatment, proteins_dict in replicate_data.items():
+            if protein not in proteins_dict:
+                continue
+                
+            temp_dict = proteins_dict[protein]
+            temps = sorted(temp_dict.keys())
+
+            if len(temps) < 4:
+                continue
+
+            intensities_list = [np.mean(np.array(temp_dict[t])) for t in temps]
+            temperatures = np.array(temps)
+            values = np.array(intensities_list)
+
+            # Remove NaNs
+            mask = ~np.isnan(values)
+            temperatures = temperatures[mask]
+            values = values[mask]
+
+            if len(temperatures) < 4:
+                continue
+
+            if normalize_data and selected_temp in temperatures:
+                norm_idx = np.where(temperatures == selected_temp)[0][0]
+                norm_value = values[norm_idx]
+                if norm_value != 0:
+                    values = values / norm_value
+
+            try:
+                valmax = np.max(values)
+                med = np.median(temperatures)
+                minval = np.min(values)
+
+                popt, _ = curve_fit(sigmoid, temperatures, values, p0=[valmax, med, minval])
+                fitted_values = sigmoid(temperatures, *popt)
+
+                ss_res = np.sum((values - fitted_values)**2)
+                ss_tot = np.sum((values - np.mean(values))**2)
+                r_squared = 1 - (ss_res / ss_tot)
+
+                if r_squared < r2_threshold:
+                    continue
+
+                successful_fits.append({
+                    'treatment': treatment,
+                    'temperatures': temperatures,
+                    'values': values,
+                    'popt': popt,
+                    'r_squared': r_squared,
+                    'fitted_values': fitted_values
+                })
+                
+                summary_data.append({
+                    'protein': protein,
+                    'treatment': treatment,
+                    'melting_point': popt[1],
+                    'R²': r_squared,
+                    'residuals': ','.join(map(str, values - fitted_values))
+                })
+
+            except RuntimeError:
+                continue
+
+        if successful_fits:
+            successful_fits.sort(key=lambda x: x['popt'][1])
+            
+            for idx, fit in enumerate(successful_fits):
+                # Plot measured points and fitted curve
+                ax.scatter(
+                    fit['temperatures'], 
+                    fit['values'],
+                    marker='o', 
+                    s=50, 
+                    alpha=1.0,
+                    label=f"{protein} {fit['treatment']} averaged points"
+                )
+
+                temp_range = np.linspace(
+                    fit['temperatures'].min(), 
+                    fit['temperatures'].max(), 
+                    100
+                )
+                ax.plot(
+                    temp_range, 
+                    sigmoid(temp_range, *fit['popt']),
+                    '--', 
+                    alpha=0.7,
+                    label=f"{protein} {fit['treatment']} averaged fitted (R²={fit['r_squared']:.2f})"
+                )
+
+                # Add spaced melting point marker
+                melt_pt_temp = fit['popt'][1]
+                melt_pt_val = sigmoid(melt_pt_temp, *fit['popt'])
+                offset = 0.3 * (idx - (len(successful_fits) - 1) / 2)  # Reduced spacing
+
+                ax.scatter(
+                    melt_pt_temp + offset, 
+                    melt_pt_val,
+                    color='red', 
+                    s=75, 
+                    marker='^',
+                    zorder=5
+                )
+
+            ax.set_xlabel('Temperature (°C)')
+            ax.set_ylabel('Normalized Intensity' if normalize_data else 'Intensity')
+            ax.set_title(f'Fitted Curves for {protein} (Averaged Data)')
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+            figures[protein] = fig
+        else:
+            plt.close(fig)
+
+    progress_bar.empty()
+    status_text.empty()
+
+    # Create and annotate averaged summary table with same logic as before
+    if summary_data:
+        averaged_summary_table = pd.DataFrame(summary_data)
+        averaged_summary_table['protein'] = averaged_summary_table['protein'].astype(str)
+        averaged_summary_table['treatment'] = averaged_summary_table['treatment'].astype(str)
+        averaged_summary_table['melting_point'] = averaged_summary_table['melting_point'].astype(float)
+        averaged_summary_table['residuals'] = averaged_summary_table['residuals'].astype(str)
+        
+        if include_go_annotation and selected_species:
+            conn = duckdb.connect('multi_proteome_go.duckdb')
+            try:
+                st.write("Adding GO annotations to averaged summary table...")
+                protein_ids = averaged_summary_table['protein'].unique().tolist()
+                annotations = get_go_annotations(conn, protein_ids, selected_species)
+                
+                for col, default in [('GO ID', ['NA']), ('Function', ['NA']), 
+                                   ('Protein Name', 'NA'), ('Link', 'NA')]:
+                    averaged_summary_table[col] = averaged_summary_table['protein'].apply(
+                        lambda pid: ';'.join(annotations.get(pid, {col: default})[col]) 
+                        if isinstance(default, list) 
+                        else annotations.get(pid, {col: default})[col]
+                    )
+                
+            finally:
+                conn.close()
+            
+            column_order = ['protein', 'Protein Name', 'treatment', 'melting_point', 
+                          'R²', 'residuals', 'GO ID', 'Function', 'Link']
+            averaged_summary_table = averaged_summary_table[
+                [col for col in column_order if col in averaged_summary_table.columns]
+            ]
+    else:
+        averaged_summary_table = pd.DataFrame(
+            columns=['protein', 'treatment', 'melting_point', 'R²', 'residuals']
+        )
+
+    return figures, averaged_summary_table
 
 def analysis():
     """
@@ -1701,7 +1972,14 @@ def analysis():
                             st.session_state.r2_threshold
                         )
                         end_time = time.time()
-                        
+                        averaged_figures, averaged_summary_table = fit_and_plot_averaged_curves(
+                            replicate_data,
+                            selected_temp=st.session_state.selected_temp,
+                            normalize_data=st.session_state.normalize_data,
+                            r2_threshold=st.session_state.r2_threshold,
+                            selected_species=selected_species if include_go_annotation else None,
+                            include_go_annotation=include_go_annotation
+                        )
                         st.write(f"Time taken to generate figures: {end_time - start_time:.2f} seconds | "
                                 f"{len(figures)} figures generated")
                     
@@ -1723,7 +2001,9 @@ def analysis():
                         include_go_annotation,
                         visualize_go_ids,
                         treatment_1,
-                        treatment_2
+                        treatment_2,
+                        averaged_figures=averaged_figures,
+                        averaged_summary_table=averaged_summary_table
                     )
                 except Exception as e:
                     st.error(f"An error occurred during analysis: {str(e)}")
@@ -1738,7 +2018,7 @@ def analysis():
     finally:
         # Clean up any remaining matplotlib figures
         plt.close('all')
-        
+
 def main():
     st.set_page_config(
         page_title="TPP Solver",
