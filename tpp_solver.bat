@@ -59,13 +59,13 @@ REM --- Check Repository Update Using ETag ---
 set DOWNLOAD_REPO=1
 if exist "%REPO_ETAG%" (
     echo Checking if repository has been updated using ETag...
-    powershell -Command ^
-        "$response = Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD; $etag = $response.Headers['ETag']; $localEtag = Get-Content '%REPO_ETAG%' -ErrorAction SilentlyContinue; if ($etag -and ($etag -eq $localEtag)) { exit 0 } else { exit 1 }"
-    if %ERRORLEVEL%==0 (
+    powershell -Command "(Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD).Headers['ETag'] -ne (Get-Content '%REPO_ETAG%')" | findstr "True" >nul
+    if !ERRORLEVEL!==0 (
+        echo Repository has been updated.
+        set DOWNLOAD_REPO=1
+    ) else (
         echo Repository is up-to-date.
         set DOWNLOAD_REPO=0
-    ) else (
-        echo Repository has been updated.
     )
 ) else (
     echo No ETag record found. Will download repository.
