@@ -1841,6 +1841,16 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
                     marker='^',
                     zorder=5
                 )
+                ax.text(
+                    melt_pt_temp + offset,
+                    melt_pt_val,
+                    f"{melt_pt_temp:.2f}°C",
+                    color='red',
+                    horizontalalignment='center',
+                    verticalalignment='bottom',
+                    fontsize=10,
+                    zorder=6  
+                )
 
             ax.set_xlabel('Temperature (°C)')
             ax.set_ylabel('Normalized Intensity' if normalize_data else 'Intensity')
