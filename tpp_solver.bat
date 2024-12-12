@@ -6,7 +6,7 @@ set SCRIPT_DIR=%~dp0
 set REPO_URL=https://github.com/somethington/tpp_solver/archive/refs/heads/main.zip
 set REPO_ZIP=%SCRIPT_DIR%tpp_solver.zip
 set REPO_DIR=%SCRIPT_DIR%tpp_solver-main
-set REPO_LAST_MODIFIED=%SCRIPT_DIR%repo_last_modified.txt
+set REPO_ETAG=%SCRIPT_DIR%repo_etag.txt
 set PYTHON_VERSION=3.11.0
 set PYTHON_EMBED_ZIP=python-%PYTHON_VERSION%-embed-amd64.zip
 set PYTHON_URL=https://www.python.org/ftp/python/%PYTHON_VERSION%/%PYTHON_EMBED_ZIP%
@@ -55,18 +55,20 @@ if exist "%UV_EXE%" (
     exit /b 1
 )
 
-REM --- Check Repository Update ---
+REM --- Check Repository Update Using ETag ---
 set DOWNLOAD_REPO=1
-if exist "%REPO_LAST_MODIFIED%" (
-    echo Checking if repository has been updated...
+if exist "%REPO_ETAG%" (
+    echo Checking if repository has been updated using ETag...
     powershell -Command ^
-        "try { $response = Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD; $localModified = Get-Content '%REPO_LAST_MODIFIED%'; if ($response.Headers['Last-Modified'] -eq $localModified) { exit 0 } else { exit 1 } } catch { exit 1 }"
-    if ERRORLEVEL 0 (
+        "$response = Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD; $etag = $response.Headers['ETag']; $localEtag = Get-Content '%REPO_ETAG%' -ErrorAction SilentlyContinue; if ($etag -and ($etag -eq $localEtag)) { exit 0 } else { exit 1 }"
+    if %ERRORLEVEL%==0 (
         echo Repository is up-to-date.
         set DOWNLOAD_REPO=0
     ) else (
-        echo Repository has been updated. Preparing to download new version...
+        echo Repository has been updated.
     )
+) else (
+    echo No ETag record found. Will download repository.
 )
 
 REM --- Download and Extract Repository ---
@@ -77,6 +79,12 @@ if !DOWNLOAD_REPO! EQU 1 (
     if ERRORLEVEL 1 (
         echo Failed to download repository.
         exit /b 1
+    )
+
+    REM Remove old repo directory if exists
+    if exist "%REPO_DIR%" (
+        echo Removing old repository directory...
+        rmdir /s /q "%REPO_DIR%"
     )
 
     echo Extracting the repository...
@@ -91,9 +99,8 @@ if !DOWNLOAD_REPO! EQU 1 (
     del "%REPO_ZIP%"
     echo Cleaned up repository ZIP file.
 
-    REM --- Save Last-Modified Header ---
-    powershell -Command ^
-        "try { Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD | Select-Object -ExpandProperty Headers | ForEach-Object { $_.'Last-Modified' } | Set-Content '%REPO_LAST_MODIFIED%' } catch { exit 1 }"
+    REM --- Save ETag ---
+    powershell -Command "$response = Invoke-WebRequest -Uri '%REPO_URL%' -Method HEAD; $response.Headers['ETag'] | Set-Content '%REPO_ETAG%'"
 ) else (
     echo Skipping repository download and extraction.
 )

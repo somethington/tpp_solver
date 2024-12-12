@@ -838,7 +838,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     # Add scatter plot
     fig.add_trace(go.Scatter(
         x=[float(x.strip()) for x in results_df['ΔTm']],
-        y=-np.log10(results_df['FDR']),  # Changed from p-value to FDR
+        y=-np.log10(results_df['FDR']),  
         mode='markers',
         marker=dict(
             color=results_df['Significant'].map({True: 'red', False: 'gray'}),
@@ -849,7 +849,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
         hovertemplate=(
             "<b>%{text}</b><br>" +
             "ΔTm: %{x:.2f}°C<br>" +
-            "-log10(FDR): %{y:.2f}<br>" +  # Updated label
+            "-log10(FDR): %{y:.2f}<br>" + 
             "<extra></extra>"
         )
     ))
@@ -860,7 +860,7 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     fig.update_layout(
         title="Volcano Plot of Melting Point Changes",
         xaxis_title="ΔTm (°C)",
-        yaxis_title="-log10(FDR)",  # Updated label
+        yaxis_title="-log10(FDR)",  
         template='plotly_white',
         showlegend=False
     )
@@ -1805,7 +1805,7 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
             successful_fits.sort(key=lambda x: x['popt'][1])
             
             for idx, fit in enumerate(successful_fits):
-                # Plot measured points and fitted curve
+
                 ax.scatter(
                     fit['temperatures'], 
                     fit['values'],
@@ -1828,7 +1828,6 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
                     label=f"{protein} {fit['treatment']} averaged fitted (R²={fit['r_squared']:.2f})"
                 )
 
-                # Add spaced melting point marker
                 melt_pt_temp = fit['popt'][1]
                 melt_pt_val = sigmoid(melt_pt_temp, *fit['popt'])
                 offset = 0.3 * (idx - (len(successful_fits) - 1) / 2)  # Reduced spacing
