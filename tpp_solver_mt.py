@@ -9,6 +9,8 @@ import streamlit as st
 import multiprocessing as mp
 import matplotlib.pyplot as plt
 import duckdb
+from scipy.stats import median_abs_deviation
+from scipy.stats.mstats import winsorize
 from scipy.optimize import curve_fit
 from scipy.stats import shapiro, boxcox, yeojohnson, gaussian_kde, mannwhitneyu
 from readme_content import display_readme
@@ -23,6 +25,135 @@ def read_tsv_file(file_path):
 
 def read_csv_file(file_path):
     return pd.read_csv(file_path)
+
+# Normalization functions
+def normalize_by_median(values):
+    """
+    Normalize values by dividing by the median.
+    Robust to outliers and loading differences.
+    
+    Args:
+        values: numpy array of values to normalize
+        
+    Returns:
+        numpy array of normalized values
+    """
+    if len(values) == 0:
+        return values
+        
+    # Handle NaN values
+    values = np.nan_to_num(values, nan=0.0)
+    
+    # Get positive values for median calculation
+    positive_values = values[values > 0]
+    if len(positive_values) == 0:
+        return values
+        
+    median = np.median(positive_values)
+    if median <= 0:
+        return values
+        
+    # Normalize while preserving zeros
+    normalized = np.zeros_like(values)
+    nonzero_mask = values > 0
+    normalized[nonzero_mask] = values[nonzero_mask] / median
+    
+    return normalized
+
+def normalize_by_robust_zscore(values):
+    """
+    Normalize using robust Z-score (median and MAD).
+    Highly resistant to outliers.
+    
+    Args:
+        values: numpy array of values to normalize
+        
+    Returns:
+        numpy array of normalized values
+    """
+    if len(values) == 0:
+        return values
+        
+    # Handle NaN values
+    values = np.nan_to_num(values, nan=0.0)
+    
+    median = np.median(values)
+    mad = median_abs_deviation(values, nan_policy='omit')
+    
+    if mad <= 0:
+        return values
+        
+    # 1.4826 makes MAD consistent with std dev for normal distribution
+    return (values - median) / (1.4826 * mad)
+
+def normalize_by_quantile(values):
+    """
+    Quantile normalization to make distributions identical.
+    Good for removing systematic biases.
+    
+    Args:
+        values: numpy array of values to normalize
+        
+    Returns:
+        numpy array of normalized values
+    """
+    if len(values) == 0:
+        return values
+        
+    # Handle NaN values
+    values = np.nan_to_num(values, nan=0.0)
+    
+    # Handle case where all values are the same
+    if np.all(values == values[0]):
+        return values
+        
+    sorted_values = np.sort(values)
+    ranks = pd.Series(values).rank(method='average', na_option='keep')
+    
+    # Preserve zeros in output
+    normalized = np.zeros_like(values)
+    nonzero_mask = values > 0
+    if np.any(nonzero_mask):
+        normalized[nonzero_mask] = np.interp(
+            ranks[nonzero_mask],
+            np.arange(1, len(values[nonzero_mask]) + 1),
+            sorted_values[nonzero_mask]
+        )
+    
+    return normalized
+
+def normalize_by_winsorization(values, limits=(0.05, 0.95)):
+    """
+    Winsorize extreme values to reduce impact of outliers.
+    Preserves data structure while limiting extreme values.
+    
+    Args:
+        values: numpy array of values to normalize
+        limits: tuple of (lower, upper) percentile limits
+        
+    Returns:
+        numpy array of normalized values
+    """
+    if len(values) == 0:
+        return values
+        
+    # Handle NaN values
+    values = np.nan_to_num(values, nan=0.0)
+    
+    # Preserve zeros
+    nonzero_mask = values > 0
+    if not np.any(nonzero_mask):
+        return values
+        
+    # Only winsorize non-zero values
+    nonzero_values = values[nonzero_mask]
+    winsorized_nonzero = winsorize(nonzero_values, limits=limits)
+    
+    # Put winsorized values back
+    normalized = values.copy()
+    normalized[nonzero_mask] = winsorized_nonzero
+    
+    return normalized
 
 # Curve fitting functions
 def sigmoid(T, a, b, plateau):
@@ -204,11 +335,22 @@ def process_protein_replicates(args):
                     temperatures = np.array(temperatures)
                     values = np.array(values)
                     
-                    if normalize_data and selected_temp in temperatures:
-                        norm_idx = np.where(temperatures == selected_temp)[0][0]
-                        norm_value = values[norm_idx]
-                        if norm_value != 0:  # Avoid division by zero
-                            values = values / norm_value
+                    if normalize_data:
+                        norm_method = st.session_state.get('norm_method', 'Reference Temperature')
+                        if norm_method == "Reference Temperature" and selected_temp in temperatures:
+                            norm_idx = np.where(temperatures == selected_temp)[0][0]
+                            norm_value = values[norm_idx]
+                            if norm_value != 0:  # Avoid division by zero
+                                values = values / norm_value
+                        elif norm_method == "Median":
+                            values = normalize_by_median(values)
+                        elif norm_method == "Robust Z-score":
+                            values = normalize_by_robust_zscore(values)
+                        elif norm_method == "Quantile":
+                            values = normalize_by_quantile(values)
+                        elif norm_method == "Winsorization":
+                            limits = st.session_state.get('winsor_limits', (0.05, 0.95))
+                            values = normalize_by_winsorization(values, limits=limits)
                     
                     try:
                         # Fit sigmoid curve
@@ -1331,20 +1473,61 @@ def handle_normalization(metadata):
     normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
     
     if normalize_data:
-        unique_temperatures = sorted(set(metadata['Temperature']))
-        selected_temp = st.selectbox(
-            "Select the temperature to which data should be normalized:",
-            options=unique_temperatures,
-            index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) 
-            if st.session_state.get('selected_temp') in unique_temperatures else 0
+        # Add normalization method selector
+        norm_methods = [
+            "Reference Temperature",
+            "Median",
+            "Robust Z-score",
+            "Quantile",
+            "Winsorization"
+        ]
+        
+        selected_method = st.selectbox(
+            "Select normalization method:",
+            options=norm_methods,
+            help="""
+            - Reference Temperature: Normalize to a specific temperature point
+            - Median: Robust to outliers, accounts for loading differences
+            - Robust Z-score: Uses median and MAD, highly resistant to outliers
+            - Quantile: Forces identical distributions across samples
+            - Winsorization: Limits extreme values while preserving data structure
+            """
         )
-        st.session_state.normalize_data = normalize_data
-        st.session_state.selected_temp = selected_temp
+        
+        st.session_state.norm_method = selected_method
+        
+        # Show temperature selector only for reference temperature normalization
+        if selected_method == "Reference Temperature":
+            unique_temperatures = sorted(set(metadata['Temperature']))
+            selected_temp = st.selectbox(
+                "Select the reference temperature:",
+                options=unique_temperatures,
+                index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) 
+                if st.session_state.get('selected_temp') in unique_temperatures else 0
+            )
+            st.session_state.selected_temp = selected_temp
+        else:
+            st.session_state.selected_temp = None
+            
+        # Show winsorization limits if that method is selected
+        if selected_method == "Winsorization":
+            limits = st.slider(
+                "Set winsorization limits (percentiles):",
+                min_value=0.0,
+                max_value=0.5,
+                value=(0.05, 0.95),
+                step=0.05,
+                help="Data points outside these percentiles will be capped"
+            )
+            st.session_state.winsor_limits = limits
     else:
         st.session_state.selected_temp = None
-
-    if st.session_state.selected_temp is None and normalize_data:
-        st.warning("Please select a temperature for normalization.")
+        st.session_state.norm_method = None
+        
+    st.session_state.normalize_data = normalize_data
+    
+    if st.session_state.selected_temp is None and normalize_data and st.session_state.norm_method == "Reference Temperature":
+        st.warning("Please select a reference temperature for normalization.")
         
     return normalize_data
 
@@ -1760,11 +1943,22 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
             if len(temperatures) < 4:
                 continue
 
-            if normalize_data and selected_temp in temperatures:
-                norm_idx = np.where(temperatures == selected_temp)[0][0]
-                norm_value = values[norm_idx]
-                if norm_value != 0:
-                    values = values / norm_value
+            if normalize_data:
+                norm_method = st.session_state.get('norm_method', 'Reference Temperature')
+                if norm_method == "Reference Temperature" and selected_temp in temperatures:
+                    norm_idx = np.where(temperatures == selected_temp)[0][0]
+                    norm_value = values[norm_idx]
+                    if norm_value != 0:
+                        values = values / norm_value
+                elif norm_method == "Median":
+                    values = normalize_by_median(values)
+                elif norm_method == "Robust Z-score":
+                    values = normalize_by_robust_zscore(values)
+                elif norm_method == "Quantile":
+                    values = normalize_by_quantile(values)
+                elif norm_method == "Winsorization":
+                    limits = st.session_state.get('winsor_limits', (0.05, 0.95))
+                    values = normalize_by_winsorization(values, limits=limits)
 
             try:
                 valmax = np.max(values)
