@@ -35,9 +35,11 @@ dev = [
 ]
 
 [tool.setuptools]
-# Flat single-module layout (no package directory); list the modules explicitly
-# so setuptools does not try to auto-discover data directories (fasta/, assets/).
-py-modules = ["tpp_solver_mt", "scraper", "readme_content"]
+# The app lives in the tpp_solver package; tpp_solver_mt is the Streamlit entry
+# point and scraper is a standalone database-builder script. Listed explicitly so
+# setuptools does not auto-discover data directories (fasta/, assets/).
+packages = ["tpp_solver"]
+py-modules = ["tpp_solver_mt", "scraper"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

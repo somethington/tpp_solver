@@ -2,21 +2,22 @@
 import numpy as np
 import pytest
 
-import tpp_solver_mt as m
+from tpp_solver import fitting, models
+from tpp_solver.preprocessing import _slice_replicate_data
 
 
 def test_sigmoid_midpoint_and_monotonicity():
     a, b, plateau = 1.0, 50.0, 0.0
     # At T == b the logistic term is exactly a/2.
-    assert m.sigmoid(b, a, b, plateau) == pytest.approx(a / 2 + plateau)
+    assert models.sigmoid(b, a, b, plateau) == pytest.approx(a / 2 + plateau)
     temps = np.linspace(30, 70, 50)
-    vals = m.sigmoid(temps, a, b, plateau)
+    vals = models.sigmoid(temps, a, b, plateau)
     assert np.all(np.diff(vals) > 0)  # strictly increasing for a > 0
 
 
 def test_paper_sigmoidal_midpoint_is_mean_of_plateaus():
     A1, A2, Tm = 1.0, 0.0, 55.0
-    assert m.paper_sigmoidal(Tm, A1, A2, Tm) == pytest.approx((A1 + A2) / 2)
+    assert models.paper_sigmoidal(Tm, A1, A2, Tm) == pytest.approx((A1 + A2) / 2)
 
 
 def test_slice_replicate_data_returns_only_one_protein():
@@ -24,7 +25,7 @@ def test_slice_replicate_data_returns_only_one_protein():
         "control": {"P1": {37.0: [1.0]}, "P2": {37.0: [2.0]}},
         "drug": {"P1": {37.0: [3.0]}},
     }
-    sliced = m._slice_replicate_data(replicate_data, "P1")
+    sliced = _slice_replicate_data(replicate_data, "P1")
     assert set(sliced.keys()) == {"control", "drug"}
     assert list(sliced["control"].keys()) == ["P1"]
     assert "P2" not in sliced["control"]
@@ -36,7 +37,7 @@ def test_slice_replicate_data_skips_treatments_without_protein():
         "control": {"P1": {37.0: [1.0]}},
         "drug": {"P2": {37.0: [2.0]}},  # no P1 here
     }
-    sliced = m._slice_replicate_data(replicate_data, "P1")
+    sliced = _slice_replicate_data(replicate_data, "P1")
     assert "drug" not in sliced
     assert list(sliced.keys()) == ["control"]
 
@@ -62,7 +63,7 @@ def test_process_protein_replicates_recovers_melting_point():
         "Reference Temperature",
         (0.05, 0.05),           # winsor_limits
     )
-    protein, fig, summary = m.process_protein_replicates(args)
+    protein, fig, summary = fitting.process_protein_replicates(args)
 
     assert protein == "P1"
     assert len(summary) == 1
