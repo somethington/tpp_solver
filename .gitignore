@@ -16,3 +16,6 @@ dist/
 
 # macOS
 .DS_Store
+
+# Large proteome FASTA inputs for scraper.py (download from UniProt; see fasta/README.md)
+fasta/*.fasta

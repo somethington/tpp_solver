@@ -715,7 +715,7 @@ def analysis():
 def main():
     st.set_page_config(
         page_title="TPP Solver",
-        page_icon="logo_32x32.png",
+        page_icon="assets/logo_32x32.png",
         layout="wide",
     )
     st.sidebar.title("Navigation")
