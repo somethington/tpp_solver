@@ -171,14 +171,20 @@ Explanation of the metadata file columns:
 Dependencies are declared in `pyproject.toml` (the canonical source; `requirements.txt`
 mirrors the core runtime deps for the Docker build).
 
+Common tasks are available via `make` (run `make help` to list them):
+
 ```bash
-# Create an environment and install the app plus dev tools (tests + linter)
+make install   # install the app + dev tools (pytest, ruff) in editable mode
+make run       # launch the Streamlit app (override the port with PORT=8502)
+make test      # run the test suite
+make lint      # lint with ruff
+```
+
+Equivalent raw commands:
+
+```bash
 python -m pip install -e ".[dev]"
-
-# Run the app locally
 streamlit run tpp_solver_mt.py
-
-# Lint and run the test suite
 ruff check .
 pytest
 ```
