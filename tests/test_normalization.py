@@ -1,8 +1,8 @@
-"""Tests for the pure normalization helpers in tpp_solver_mt."""
+"""Tests for the pure normalization helpers."""
 import numpy as np
 import pytest
 
-import tpp_solver_mt as m
+from tpp_solver import normalization as m
 
 
 def test_median_basic_and_zero_preservation():
