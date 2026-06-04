@@ -1,9 +1,9 @@
-"""Tests for the pure data-processing helpers in tpp_solver_mt."""
+"""Tests for the pure data-processing helpers."""
 import numpy as np
 import pandas as pd
 import pytest
 
-import tpp_solver_mt as m
+from tpp_solver import preprocessing as m
 
 
 def test_impute_is_deterministic_with_seed_and_fills_zeros():
