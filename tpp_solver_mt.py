@@ -217,8 +217,6 @@ def filter_and_lowest_float(tsv_data, samples):
     if missing_cols:
         raise ValueError("The TSV file does not contain all values from 'Samples' in the CSV")
     
-    selected_data = tsv_data[samples]
-    num_data = selected_data.apply(pd.to_numeric, errors='coerce')
     filtered_data = tsv_data  # No filtering based on zeros anymore
 
     num_filtered_data = filtered_data[samples].apply(pd.to_numeric, errors='coerce')
@@ -320,7 +318,6 @@ def process_protein_replicates(args):
         marker_opts,
         size_opts,
         alpha_opts,
-        position_opts,
         selected_temp,
         normalize_data,
         r2_threshold,
@@ -333,14 +330,12 @@ def process_protein_replicates(args):
     markers = itertools.cycle(marker_opts)
     sizes = itertools.cycle(size_opts)
     alphas = itertools.cycle(alpha_opts)
-    positions = itertools.cycle(position_opts)
 
     summary_data = []
     fig = None
     ax = None
-    
+
     try:
-        y_offset = 0.0
         for treatment, proteins in data_dict.items():
             if protein in proteins:
                 protein_data = proteins[protein]
@@ -427,8 +422,7 @@ def process_protein_replicates(args):
                     marker = next(markers)
                     size = next(sizes)
                     alpha = next(alphas)
-                    curpos = next(positions)
-                    
+
                     # Plot each replicate
                     for i, fit_data in enumerate(replicate_fits):
                         # Plot measured points
@@ -586,7 +580,6 @@ def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_th
     marker_opts = ['o', 's', '^', 'v']
     size_opts = [50, 75, 100]
     alpha_opts = [1.0, 0.8, 0.6]
-    position_opts = ['left', 'right']
 
     # Resolve normalization settings on the main thread. Worker processes have no
     # Streamlit session context (the default start method is 'spawn' on macOS and
@@ -608,7 +601,6 @@ def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_th
             marker_opts,
             size_opts,
             alpha_opts,
-            position_opts,
             selected_temp,
             normalize_data,
             r2_threshold,
@@ -846,7 +838,7 @@ def compare_melting_points_violin(averaged_table):
     # Assign colors to treatments
     treatments = data['treatment'].unique()
     colors = px.colors.qualitative.Plotly
-    color_map = dict(zip(treatments, colors))
+    color_map = dict(zip(treatments, colors, strict=False))
     treatment_to_num = {treatment: idx for idx, treatment in enumerate(treatments)}
 
     # Create violin plots
@@ -1953,7 +1945,7 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
     summary_data = []
     all_proteins = set()
     
-    for treatment, proteins_dict in replicate_data.items():
+    for proteins_dict in replicate_data.values():
         for prot in proteins_dict.keys():
             all_proteins.add(prot)
 
@@ -2168,8 +2160,9 @@ def analysis():
                 st.error("Failed to extract samples from metadata. Please check your CSV file.")
                 return
                 
-            normalize_data = setup_analysis_parameters(metadata)
-            
+            # Records the normalization choice in st.session_state for later use.
+            setup_analysis_parameters(metadata)
+
             # Setup GO annotation
             include_go_annotation, selected_species = setup_go_annotation()
             

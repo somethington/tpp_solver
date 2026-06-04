@@ -163,3 +163,30 @@ Explanation of the metadata file columns:
 
 - **TSV file**: Intensity data from FragPipe.
 - **CSV file**: Metadata (formatted as described above)
+
+---
+
+## **Development**
+
+Dependencies are declared in `pyproject.toml` (the canonical source; `requirements.txt`
+mirrors the core runtime deps for the Docker build).
+
+```bash
+# Create an environment and install the app plus dev tools (tests + linter)
+python -m pip install -e ".[dev]"
+
+# Run the app locally
+streamlit run tpp_solver_mt.py
+
+# Lint and run the test suite
+ruff check .
+pytest
+```
+
+Optional extras:
+
+- `pip install ".[scraper]"` — installs `biopython`/`requests` needed only to
+  (re)build the GO/proteome database with `scraper.py`.
+
+Continuous integration (`.github/workflows/ci.yml`) runs `ruff` and `pytest`
+against Python 3.10–3.12 on every push and pull request.
