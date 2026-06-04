@@ -1,16 +1,27 @@
-# Ignore the .git directory
+# Version control
 .git
-
-# Ignore Docker-related files
-Dockerfile
+.github
+.gitignore
 .dockerignore
 
-# Ignore local environment files
+# Docker / compose files (not needed inside the image)
+Dockerfile
+docker-compose*.yml
+
+# Local Python environments and caches
+.venv
+.conda
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Dev-only assets not needed at runtime
+tests/
+fasta/
+*.log
 *.env
 
-# Ignore Python cache files
-*.pyc
-__pycache__
-
-# Ignore other unnecessary files
-*.log
+# OS cruft
+.DS_Store

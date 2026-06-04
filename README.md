@@ -190,3 +190,14 @@ Optional extras:
 
 Continuous integration (`.github/workflows/ci.yml`) runs `ruff` and `pytest`
 against Python 3.10–3.12 on every push and pull request.
+
+### Data and large files
+
+- `multi_proteome_go.duckdb` (~20 MB) is the bundled GO-annotation database used
+  at runtime. It is a generated artifact produced by `scraper.py` from UniProt
+  reference proteomes. It remains tracked in git so the app works out of the box;
+  shrinking the repository history would require migrating it to Git LFS or a
+  release asset (a deliberate, repo-wide change).
+- The proteome FASTA inputs in `fasta/` are **not** tracked (see
+  [`fasta/README.md`](fasta/README.md)); download them from UniProt only if you
+  need to rebuild the database.
