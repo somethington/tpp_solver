@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import multiprocessing as mp
+import matplotlib
+matplotlib.use("Agg")  # headless/multiprocessing-safe backend (no GUI required)
 import matplotlib.pyplot as plt
 import duckdb
 from scipy.stats import median_abs_deviation
@@ -17,6 +19,22 @@ from readme_content import display_readme
 import plotly.graph_objects as go
 import plotly.express as px
 import textwrap
+
+
+# Path to the bundled GO/proteome database, resolved relative to this file so the
+# app works regardless of the process working directory.
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "multi_proteome_go.duckdb")
+
+
+@st.cache_resource
+def get_db_connection():
+    """Return a cached, read-only DuckDB connection.
+
+    Streamlit re-runs the whole script on every interaction; caching the
+    connection avoids reopening the database on each rerun. Read-only mode also
+    lets multiple app replicas share the same database file.
+    """
+    return duckdb.connect(DB_PATH, read_only=True)
 
 
 # File reading functions
@@ -228,18 +246,24 @@ def count_invalid_rows(tsv_data, samples, max_zeros_allowed):
     return excess_zero_rows
 
 # Impute missing data with random values
-def impute_filtered_data(filtered_data, samples, lowest_float):
+def impute_filtered_data(filtered_data, samples, lowest_float, seed=None):
+    """Impute zeros with small random values drawn below the lowest observed value.
+
+    A ``seed`` makes the imputation (and therefore the downstream melting points)
+    reproducible across runs.
+    """
+    rng = np.random.default_rng(seed)
     data_to_process = filtered_data[samples].copy()
 
     for col in samples:
         num_col = pd.to_numeric(data_to_process[col], errors='coerce')
         zero_mask = num_col == 0
-        zero_count = zero_mask.sum()
+        zero_count = int(zero_mask.sum())
 
         if zero_count > 0:
-            rand_vals = np.random.uniform(0, lowest_float, size=zero_count)
+            rand_vals = rng.uniform(0, lowest_float, size=zero_count)
             num_col[zero_mask] = rand_vals
-        
+
         data_to_process[col] = num_col
 
     filtered_data[samples] = data_to_process
@@ -293,15 +317,24 @@ def process_protein_replicates(args):
     (
         protein,
         data_dict,
-        markers,
-        sizes,
-        alphas,
-        positions,
+        marker_opts,
+        size_opts,
+        alpha_opts,
+        position_opts,
         selected_temp,
         normalize_data,
         r2_threshold,
+        norm_method,
+        winsor_limits,
     ) = args
-    
+
+    # Build styling cycles locally; this runs in a worker process and must not
+    # share mutable iterators or touch Streamlit's session state.
+    markers = itertools.cycle(marker_opts)
+    sizes = itertools.cycle(size_opts)
+    alphas = itertools.cycle(alpha_opts)
+    positions = itertools.cycle(position_opts)
+
     summary_data = []
     fig = None
     ax = None
@@ -336,7 +369,6 @@ def process_protein_replicates(args):
                     values = np.array(values)
                     
                     if normalize_data:
-                        norm_method = st.session_state.get('norm_method', 'Reference Temperature')
                         if norm_method == "Reference Temperature" and selected_temp in temperatures:
                             norm_idx = np.where(temperatures == selected_temp)[0][0]
                             norm_value = values[norm_idx]
@@ -349,8 +381,7 @@ def process_protein_replicates(args):
                         elif norm_method == "Quantile":
                             values = normalize_by_quantile(values)
                         elif norm_method == "Winsorization":
-                            limits = st.session_state.get('winsor_limits', (0.05, 0.95))
-                            values = normalize_by_winsorization(values, limits=limits)
+                            values = normalize_by_winsorization(values, limits=winsor_limits)
                     
                     try:
                         # Fit sigmoid curve
@@ -519,16 +550,30 @@ def get_replicate_data(csv_data, filtered_data):
     
     return replicate_data
 
+def _slice_replicate_data(replicate_data, protein):
+    """Extract a single protein's data so workers receive only what they need.
+
+    Sending the full ``replicate_data`` to every worker pickles the entire
+    dataset once per protein, which dominates runtime and memory on large
+    proteomes. This returns the same nested shape but for one protein only.
+    """
+    return {
+        treatment: {protein: proteins[protein]}
+        for treatment, proteins in replicate_data.items()
+        if protein in proteins
+    }
+
+
 def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_threshold):
     """
     Fit curves and create plots for all replicates with progress bar.
-    
+
     Args:
         replicate_data: Dictionary containing protein replicate data
         selected_temp: Temperature for normalization
         normalize_data: Whether to normalize the data
         r2_threshold: R² threshold for curve fitting
-        
+
     Returns:
         tuple: (figures, summary_table)
     """
@@ -536,51 +581,61 @@ def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_th
     all_proteins = set()
     for treatment in replicate_data.values():
         all_proteins.update(treatment.keys())
-    
-    # Create iterators for plot styling
-    markers = itertools.cycle(['o', 's', '^', 'v'])
-    sizes = itertools.cycle([50, 75, 100])
-    alphas = itertools.cycle([1.0, 0.8, 0.6])
-    positions = itertools.cycle(['left', 'right'])
-    
+
+    # Plot styling options; each worker builds its own cycles to stay process-safe.
+    marker_opts = ['o', 's', '^', 'v']
+    size_opts = [50, 75, 100]
+    alpha_opts = [1.0, 0.8, 0.6]
+    position_opts = ['left', 'right']
+
+    # Resolve normalization settings on the main thread. Worker processes have no
+    # Streamlit session context (the default start method is 'spawn' on macOS and
+    # Windows), so these must be passed explicitly rather than read from st.*.
+    norm_method = st.session_state.get('norm_method', 'Reference Temperature')
+    winsor_limits = st.session_state.get('winsor_limits', (0.05, 0.95))
+
     # Initialize progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_proteins = len(all_proteins)
-    
-    # Create process pool
-    pool = mp.Pool(processes=mp.cpu_count())
-    
-    # Prepare arguments for parallel processing
+
+    # Prepare arguments for parallel processing. Each worker gets ONLY its
+    # protein's slice of the data, not the whole dataset.
     process_args = [
-        (protein, replicate_data, iter(markers), iter(sizes), iter(alphas), iter(positions), 
-         selected_temp, normalize_data, r2_threshold) 
+        (
+            protein,
+            _slice_replicate_data(replicate_data, protein),
+            marker_opts,
+            size_opts,
+            alpha_opts,
+            position_opts,
+            selected_temp,
+            normalize_data,
+            r2_threshold,
+            norm_method,
+            winsor_limits,
+        )
         for protein in all_proteins
     ]
-    
-    # Create an iterator for the results
-    results_iter = pool.imap(process_protein_replicates, process_args)
-    
+
     # Process results with progress bar
     figures = {}
     all_summary_data = []
-    
-    for i, result in enumerate(results_iter):
-        # Update progress
-        progress = (i + 1) / total_proteins
-        progress_bar.progress(progress)
-        status_text.text(f"Processing protein {i+1} of {total_proteins}")
-        
-        # Handle result
-        if result is not None:
-            protein, fig, summary_data = result
-            if protein is not None and summary_data:
-                figures[protein] = fig
-                all_summary_data.extend(summary_data)
-    
-    # Clean up
-    pool.close()
-    pool.join()
+
+    with mp.Pool(processes=mp.cpu_count()) as pool:
+        for i, result in enumerate(pool.imap(process_protein_replicates, process_args)):
+            # Update progress
+            progress = (i + 1) / total_proteins
+            progress_bar.progress(progress)
+            status_text.text(f"Processing protein {i+1} of {total_proteins}")
+
+            # Handle result
+            if result is not None:
+                protein, fig, summary_data = result
+                if protein is not None and summary_data:
+                    figures[protein] = fig
+                    all_summary_data.extend(summary_data)
+
     progress_bar.empty()
     status_text.empty()
     
@@ -797,6 +852,9 @@ def compare_melting_points_violin(averaged_table):
     # Create violin plots
     fig = go.Figure()
 
+    # Deterministic jitter so the plot is reproducible across reruns.
+    jitter_rng = np.random.default_rng(0)
+
     for treatment in treatments:
         treatment_data = data[data['treatment'] == treatment]['melting_point']
         violin_color = color_map[treatment]
@@ -819,8 +877,8 @@ def compare_melting_points_violin(averaged_table):
         ))
 
         # Add jittered points
-        jitter_strength = 0.05  
-        jittered_x = treatment_num + np.random.uniform(-jitter_strength, jitter_strength, size=len(treatment_data))
+        jitter_strength = 0.05
+        jittered_x = treatment_num + jitter_rng.uniform(-jitter_strength, jitter_strength, size=len(treatment_data))
 
         fig.add_trace(go.Scatter(
             y=treatment_data,
@@ -1009,20 +1067,17 @@ def perform_protein_statistical_tests(replicate_table, treatment_1, treatment_2)
     
     st.plotly_chart(fig)
 
+@st.cache_data
 def get_species_list():
     """
     Get list of available species from the database.
-    
+
     Returns:
         list: List of species names
     """
-    conn = duckdb.connect('multi_proteome_go.duckdb')
-    try:
-        species = conn.execute("SELECT name FROM species").fetchall()
-        species_names = [s[0] for s in species]
-        return species_names
-    finally:
-        conn.close()
+    conn = get_db_connection()
+    species = conn.execute("SELECT name FROM species").fetchall()
+    return [s[0] for s in species]
 
 def annotate_proteins(protein_data, protein_id_column, selected_species):
     """
@@ -1036,29 +1091,26 @@ def annotate_proteins(protein_data, protein_id_column, selected_species):
     Returns:
         pd.DataFrame: DataFrame with added GO annotations
     """
-    conn = duckdb.connect('multi_proteome_go.duckdb')
-    try:
-        with st.spinner("Adding GO annotations..."):
-            protein_ids = protein_data[protein_id_column].astype(str).tolist()
-            annotations = get_go_annotations(conn, protein_ids, selected_species)
-            
-            # Add annotation columns
-            protein_data['GO ID'] = protein_data[protein_id_column].apply(
-                lambda pid: ';'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
-            )
-            protein_data['Function'] = protein_data[protein_id_column].apply(
-                lambda pid: ';'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
-            )
-            protein_data['Protein Name'] = protein_data[protein_id_column].apply(
-                lambda pid: annotations.get(pid, {'Protein Name': 'NA'})['Protein Name']
-            )
-            protein_data['Link'] = protein_data[protein_id_column].apply(
-                lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
-            )
-            
-            return protein_data
-    finally:
-        conn.close()
+    conn = get_db_connection()
+    with st.spinner("Adding GO annotations..."):
+        protein_ids = protein_data[protein_id_column].astype(str).tolist()
+        annotations = get_go_annotations(conn, protein_ids, selected_species)
+
+        # Add annotation columns
+        protein_data['GO ID'] = protein_data[protein_id_column].apply(
+            lambda pid: ';'.join(annotations.get(pid, {'GO ID': ['NA']})['GO ID'])
+        )
+        protein_data['Function'] = protein_data[protein_id_column].apply(
+            lambda pid: ';'.join(annotations.get(pid, {'Function': ['NA']})['Function'])
+        )
+        protein_data['Protein Name'] = protein_data[protein_id_column].apply(
+            lambda pid: annotations.get(pid, {'Protein Name': 'NA'})['Protein Name']
+        )
+        protein_data['Link'] = protein_data[protein_id_column].apply(
+            lambda pid: annotations.get(pid, {'Link': 'NA'})['Link']
+        )
+
+        return protein_data
 
 def go_annotation():
     """
@@ -1325,8 +1377,10 @@ def session_init():
         st.session_state.transformations_to_apply = []
     if 'visualize_go_ids' not in st.session_state:
         st.session_state.visualize_go_ids = False
-    if 'threshold' not in st.session_state: 
+    if 'threshold' not in st.session_state:
         st.session_state.threshold = 4.0
+    if 'random_seed' not in st.session_state:
+        st.session_state.random_seed = 42
 
 def validate_inputs(uploaded_tsv, uploaded_csv):
     """
@@ -1545,11 +1599,8 @@ def setup_go_annotation():
 
     selected_species = None
     if include_go_annotation:
-        conn = duckdb.connect('multi_proteome_go.duckdb')
-        species = conn.execute("SELECT name FROM species").fetchall()
-        species_names = [s[0] for s in species]
+        species_names = get_species_list()
         selected_species = st.selectbox("Select species for GO annotation", species_names)
-        conn.close()
 
     return include_go_annotation, selected_species
 
@@ -1768,8 +1819,8 @@ def add_go_annotations(summary_table, selected_species):
     Returns:
         pd.DataFrame: Summary table with added GO annotations
     """
-    conn = duckdb.connect('multi_proteome_go.duckdb')
-    
+    conn = get_db_connection()
+
     with st.spinner("Adding GO annotations..."):
         protein_ids = summary_table['protein'].tolist()
         annotations = get_go_annotations(conn, protein_ids, selected_species)
@@ -1789,8 +1840,6 @@ def add_go_annotations(summary_table, selected_species):
             summary_table.at[index, 'Link'] = annotation['Link']
 
         st.write("GO annotations and protein names added to the summary table.")
-
-    conn.close()
 
     # Reorder columns to keep consistent format
     desired_order = ['protein', 'Protein Name', 'treatment', 'melting_point', 
@@ -1912,7 +1961,11 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
     progress_bar = st.progress(0)
     status_text = st.empty()
     st.write("Fitting averaged curves...")
-    
+
+    # Resolve normalization settings once (this function runs on the main thread).
+    norm_method = st.session_state.get('norm_method', 'Reference Temperature')
+    winsor_limits = st.session_state.get('winsor_limits', (0.05, 0.95))
+
     for i, protein in enumerate(all_proteins):
         progress = (i + 1) / total_proteins
         progress_bar.progress(progress)
@@ -1944,7 +1997,6 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
                 continue
 
             if normalize_data:
-                norm_method = st.session_state.get('norm_method', 'Reference Temperature')
                 if norm_method == "Reference Temperature" and selected_temp in temperatures:
                     norm_idx = np.where(temperatures == selected_temp)[0][0]
                     norm_value = values[norm_idx]
@@ -1957,8 +2009,7 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
                 elif norm_method == "Quantile":
                     values = normalize_by_quantile(values)
                 elif norm_method == "Winsorization":
-                    limits = st.session_state.get('winsor_limits', (0.05, 0.95))
-                    values = normalize_by_winsorization(values, limits=limits)
+                    values = normalize_by_winsorization(values, limits=winsor_limits)
 
             try:
                 valmax = np.max(values)
@@ -2065,23 +2116,20 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
         averaged_summary_table['residuals'] = averaged_summary_table['residuals'].astype(str)
         
         if include_go_annotation and selected_species:
-            conn = duckdb.connect('multi_proteome_go.duckdb')
-            try:
-                st.write("Adding GO annotations to averaged summary table...")
-                protein_ids = averaged_summary_table['protein'].unique().tolist()
-                annotations = get_go_annotations(conn, protein_ids, selected_species)
-                
-                for col, default in [('GO ID', ['NA']), ('Function', ['NA']), 
-                                   ('Protein Name', 'NA'), ('Link', 'NA')]:
-                    averaged_summary_table[col] = averaged_summary_table['protein'].apply(
-                        lambda pid: ';'.join(annotations.get(pid, {col: default})[col]) 
-                        if isinstance(default, list) 
-                        else annotations.get(pid, {col: default})[col]
-                    )
-                
-            finally:
-                conn.close()
-            
+            conn = get_db_connection()
+            st.write("Adding GO annotations to averaged summary table...")
+            protein_ids = averaged_summary_table['protein'].unique().tolist()
+            annotations = get_go_annotations(conn, protein_ids, selected_species)
+
+            for col, default in [('GO ID', ['NA']), ('Function', ['NA']),
+                               ('Protein Name', 'NA'), ('Link', 'NA')]:
+                averaged_summary_table[col] = averaged_summary_table['protein'].apply(
+                    lambda pid, col=col, default=default: ';'.join(annotations.get(pid, {col: default})[col])
+                    if isinstance(default, list)
+                    else annotations.get(pid, {col: default})[col]
+                )
+
+
             column_order = ['protein', 'Protein Name', 'treatment', 'melting_point', 
                           'R²', 'residuals', 'GO ID', 'Function', 'Link']
             averaged_summary_table = averaged_summary_table[
@@ -2145,6 +2193,16 @@ def analysis():
                 help="Minimum R² value required for accepting protein curve fits"
             )
 
+            # Random seed for reproducible imputation of missing values
+            st.session_state.random_seed = st.number_input(
+                "Random seed (for reproducible imputation):",
+                min_value=0,
+                value=int(st.session_state.get('random_seed', 42)),
+                step=1,
+                help="Imputation fills missing values with random draws. Fixing the "
+                     "seed makes results reproducible across runs."
+            )
+
             # Start analysis button
             if st.button("Start Analysis"):
                 try:
@@ -2157,7 +2215,8 @@ def analysis():
                     filtered_data_imputed = impute_filtered_data(
                         filtered_data.copy(),
                         metadata['Samples'],
-                        ceiling_rand
+                        ceiling_rand,
+                        seed=st.session_state.get('random_seed', 42)
                     )
                     
                     replicate_data = get_replicate_data(
