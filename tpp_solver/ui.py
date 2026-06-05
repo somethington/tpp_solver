@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import streamlit as st
 
+from . import PROJECT_ROOT
 from .annotation import add_go_annotations, annotate_proteins
 from .database import get_species_list
 from .fitting import fit_and_plot_averaged_curves, fit_and_plot_replicates
@@ -184,9 +185,8 @@ def handle_example_data():
     sample_help = "By pressing this button, sample experimental data will be loaded for demonstration purposes"
     if st.button('Load example data', help=sample_help):
         try:
-            data_path = os.path.dirname(os.path.abspath(__file__))
-            tsv_path = os.path.join(data_path, "sample_data.tsv")
-            csv_path = os.path.join(data_path, "sample_metadata.csv")
+            tsv_path = os.path.join(PROJECT_ROOT, "sample_data.tsv")
+            csv_path = os.path.join(PROJECT_ROOT, "sample_metadata.csv")
             
             if not os.path.exists(tsv_path) or not os.path.exists(csv_path):
                 st.error("Sample data files not found!")

@@ -4,12 +4,11 @@ import os
 import duckdb
 import streamlit as st
 
+from . import PROJECT_ROOT
+
 # Path to the bundled GO/proteome database, resolved relative to the project root
 # so the app works regardless of the process working directory.
-DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "multi_proteome_go.duckdb",
-)
+DB_PATH = os.path.join(PROJECT_ROOT, "multi_proteome_go.duckdb")
 
 @st.cache_resource
 def get_db_connection():
