@@ -262,66 +262,38 @@ def setup_analysis_parameters(metadata):
 def handle_normalization(metadata):
     """
     Handle normalization settings interface.
+
+    Curves are normalized to a user-selected reference temperature (the
+    intensity at that temperature is set to 1, i.e. fraction non-denatured),
+    which is the standard normalization for thermal proteome profiling.
     """
-    normalize_data = st.checkbox("Normalize", value=st.session_state.get('normalize_data', True))
-    
+    normalize_data = st.checkbox(
+        "Normalize to a reference temperature",
+        value=st.session_state.get('normalize_data', True),
+        help="Divides each protein's curve by its intensity at the reference "
+             "temperature, so every curve starts at 1.0 (fully soluble)."
+    )
+
     if normalize_data:
-        # Add normalization method selector
-        norm_methods = [
-            "Reference Temperature",
-            "Median",
-            "Robust Z-score",
-            "Quantile",
-            "Winsorization"
-        ]
-        
-        selected_method = st.selectbox(
-            "Select normalization method:",
-            options=norm_methods,
-            help="""
-            - Reference Temperature: Normalize to a specific temperature point
-            - Median: Robust to outliers, accounts for loading differences
-            - Robust Z-score: Uses median and MAD, highly resistant to outliers
-            - Quantile: Forces identical distributions across samples
-            - Winsorization: Limits extreme values while preserving data structure
-            """
-        )
-        
-        st.session_state.norm_method = selected_method
-        
-        # Show temperature selector only for reference temperature normalization
-        if selected_method == "Reference Temperature":
-            unique_temperatures = sorted(set(metadata['Temperature']))
+        st.session_state.norm_method = "Reference Temperature"
+        unique_temperatures = sorted(set(metadata['Temperature']))
+        if unique_temperatures:
             selected_temp = st.selectbox(
                 "Select the reference temperature:",
                 options=unique_temperatures,
-                index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0])) 
+                index=unique_temperatures.index(st.session_state.get('selected_temp', unique_temperatures[0]))
                 if st.session_state.get('selected_temp') in unique_temperatures else 0
             )
             st.session_state.selected_temp = selected_temp
         else:
             st.session_state.selected_temp = None
-            
-        # Show winsorization limits if that method is selected
-        if selected_method == "Winsorization":
-            limits = st.slider(
-                "Set winsorization limits (percentiles):",
-                min_value=0.0,
-                max_value=0.5,
-                value=(0.05, 0.95),
-                step=0.05,
-                help="Data points outside these percentiles will be capped"
-            )
-            st.session_state.winsor_limits = limits
+            st.warning("No temperatures available to use as a reference.")
     else:
         st.session_state.selected_temp = None
         st.session_state.norm_method = None
-        
+
     st.session_state.normalize_data = normalize_data
-    
-    if st.session_state.selected_temp is None and normalize_data and st.session_state.norm_method == "Reference Temperature":
-        st.warning("Please select a reference temperature for normalization.")
-        
+
     return normalize_data
 
 def setup_go_annotation():
