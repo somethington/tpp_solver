@@ -60,13 +60,33 @@ def test_process_protein_replicates_recovers_melting_point():
         None,                   # selected_temp
         False,                  # normalize_data
         0.8,                    # r2_threshold
-        "Reference Temperature",
-        (0.05, 0.05),           # winsor_limits
     )
     protein, fig, summary = fitting.process_protein_replicates(args)
 
     assert protein == "P1"
     assert len(summary) == 1
     assert summary[0]["treatment"] == "control"
+    assert summary[0]["melting_point"] == pytest.approx(tm, abs=1.0)
+    plt.close("all")
+
+
+def test_process_protein_replicates_reference_temp_normalization():
+    """Reference-temperature normalization runs and preserves the melting point."""
+    import matplotlib.pyplot as plt
+
+    temps = [37, 40, 45, 50, 55, 60, 65]
+    tm = 52.0
+    protein_data = {t: [3.0 / (1.0 + np.exp(t - tm))] for t in temps}  # scaled curve
+    data_dict = {"control": {"P1": protein_data}}
+
+    args = (
+        "P1", data_dict,
+        ["o", "s", "^", "v"], [50, 75, 100], [1.0, 0.8, 0.6],
+        37,      # selected_temp (reference, present in the series)
+        True,    # normalize_data
+        0.8,     # r2_threshold
+    )
+    _, _, summary = fitting.process_protein_replicates(args)
+    assert len(summary) == 1
     assert summary[0]["melting_point"] == pytest.approx(tm, abs=1.0)
     plt.close("all")

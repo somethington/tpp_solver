@@ -12,12 +12,6 @@ from scipy.optimize import curve_fit
 
 from .database import get_db_connection, get_go_annotations
 from .models import sigmoid
-from .normalization import (
-    normalize_by_median,
-    normalize_by_quantile,
-    normalize_by_robust_zscore,
-    normalize_by_winsorization,
-)
 from .preprocessing import _slice_replicate_data
 
 def process_protein_replicates(args):
@@ -36,8 +30,6 @@ def process_protein_replicates(args):
         selected_temp,
         normalize_data,
         r2_threshold,
-        norm_method,
-        winsor_limits,
     ) = args
 
     # Build styling cycles locally; this runs in a worker process and must not
@@ -78,21 +70,15 @@ def process_protein_replicates(args):
                     temperatures = np.array(temperatures)
                     values = np.array(values)
                     
-                    if normalize_data:
-                        if norm_method == "Reference Temperature" and selected_temp in temperatures:
-                            norm_idx = np.where(temperatures == selected_temp)[0][0]
-                            norm_value = values[norm_idx]
-                            if norm_value != 0:  # Avoid division by zero
-                                values = values / norm_value
-                        elif norm_method == "Median":
-                            values = normalize_by_median(values)
-                        elif norm_method == "Robust Z-score":
-                            values = normalize_by_robust_zscore(values)
-                        elif norm_method == "Quantile":
-                            values = normalize_by_quantile(values)
-                        elif norm_method == "Winsorization":
-                            values = normalize_by_winsorization(values, limits=winsor_limits)
-                    
+                    # Normalize each curve to its reference-temperature intensity
+                    # (fraction non-denatured = 1 at the reference temperature).
+                    if normalize_data and selected_temp in temperatures:
+                        norm_idx = np.where(temperatures == selected_temp)[0][0]
+                        norm_value = values[norm_idx]
+                        if norm_value != 0:  # Avoid division by zero
+                            values = values / norm_value
+
+
                     try:
                         # Fit sigmoid curve
                         valmax = max(values)
@@ -229,12 +215,6 @@ def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_th
     size_opts = [50, 75, 100]
     alpha_opts = [1.0, 0.8, 0.6]
 
-    # Resolve normalization settings on the main thread. Worker processes have no
-    # Streamlit session context (the default start method is 'spawn' on macOS and
-    # Windows), so these must be passed explicitly rather than read from st.*.
-    norm_method = st.session_state.get('norm_method', 'Reference Temperature')
-    winsor_limits = st.session_state.get('winsor_limits', (0.05, 0.95))
-
     # Initialize progress tracking
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -252,8 +232,6 @@ def fit_and_plot_replicates(replicate_data, selected_temp, normalize_data, r2_th
             selected_temp,
             normalize_data,
             r2_threshold,
-            norm_method,
-            winsor_limits,
         )
         for protein in all_proteins
     ]
@@ -312,10 +290,6 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
     status_text = st.empty()
     st.write("Fitting averaged curves...")
 
-    # Resolve normalization settings once (this function runs on the main thread).
-    norm_method = st.session_state.get('norm_method', 'Reference Temperature')
-    winsor_limits = st.session_state.get('winsor_limits', (0.05, 0.95))
-
     for i, protein in enumerate(all_proteins):
         progress = (i + 1) / total_proteins
         progress_bar.progress(progress)
@@ -346,20 +320,12 @@ def fit_and_plot_averaged_curves(replicate_data, selected_temp=None, normalize_d
             if len(temperatures) < 4:
                 continue
 
-            if normalize_data:
-                if norm_method == "Reference Temperature" and selected_temp in temperatures:
-                    norm_idx = np.where(temperatures == selected_temp)[0][0]
-                    norm_value = values[norm_idx]
-                    if norm_value != 0:
-                        values = values / norm_value
-                elif norm_method == "Median":
-                    values = normalize_by_median(values)
-                elif norm_method == "Robust Z-score":
-                    values = normalize_by_robust_zscore(values)
-                elif norm_method == "Quantile":
-                    values = normalize_by_quantile(values)
-                elif norm_method == "Winsorization":
-                    values = normalize_by_winsorization(values, limits=winsor_limits)
+            # Normalize each averaged curve to its reference-temperature intensity.
+            if normalize_data and selected_temp in temperatures:
+                norm_idx = np.where(temperatures == selected_temp)[0][0]
+                norm_value = values[norm_idx]
+                if norm_value != 0:
+                    values = values / norm_value
 
             try:
                 valmax = np.max(values)
