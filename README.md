@@ -197,6 +197,31 @@ Optional extras:
 Continuous integration (`.github/workflows/ci.yml`) runs `ruff` and `pytest`
 against Python 3.10–3.12 on every push and pull request.
 
+### Benchmarks
+
+Speed baselines for the compute hot-paths, to guide a planned Rust rewrite of
+the internals. Benchmarks live in `benchmarks/` and are **excluded from the normal
+test run** (`pytest` only collects `tests/`).
+
+```bash
+pip install -e ".[bench]"
+make bench                      # or: pytest benchmarks/ --benchmark-only
+```
+
+On the bundled ~1000-protein sample dataset, the **sigmoid fitting loop dominates
+by orders of magnitude** (≈2.8 s vs. milliseconds for everything else), so it is
+the prime rewrite target, followed distantly by the data reshape
+(`get_replicate_data`). Numbers are machine-dependent.
+
+To measure a rewrite, save a baseline, change the implementation, then compare:
+
+```bash
+pytest benchmarks/ --benchmark-only --benchmark-save=python
+# ... swap in the Rust implementation ...
+pytest benchmarks/ --benchmark-only --benchmark-compare=python \
+    --benchmark-compare-fail=mean:5%
+```
+
 ### Releasing
 
 Versioning is unified around a single source of truth — `__version__` in
