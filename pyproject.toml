@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tpp-solver"
-version = "1.2.0"
+# Single source of truth: tpp_solver/__init__.py:__version__ (read dynamically below).
+dynamic = ["version"]
 description = "Streamlit app for analyzing protein thermal stability via Thermal Proteome Profiling (TPP)."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,6 +34,9 @@ dev = [
     "pytest>=8,<10",
     "ruff>=0.6",
 ]
+
+[tool.setuptools.dynamic]
+version = { attr = "tpp_solver.__version__" }
 
 [tool.setuptools]
 # The app lives in the tpp_solver package; tpp_solver_mt is the Streamlit entry

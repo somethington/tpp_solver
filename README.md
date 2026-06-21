@@ -197,6 +197,25 @@ Optional extras:
 Continuous integration (`.github/workflows/ci.yml`) runs `ruff` and `pytest`
 against Python 3.10–3.12 on every push and pull request.
 
+### Releasing
+
+Versioning is unified around a single source of truth — `__version__` in
+[`tpp_solver/__init__.py`](tpp_solver/__init__.py) (which `pyproject.toml` reads
+dynamically). Cutting a release is one manual step plus a merge:
+
+1. On `dev`, bump `__version__` to the new version (e.g. `1.2.4`).
+2. Merge `dev → main`.
+
+The push to `main` runs `.github/workflows/release.yml`, which:
+- runs `ruff` + `pytest` as a gate,
+- always rebuilds and publishes the `:latest` image,
+- and, **if `__version__` is new** (no matching tag yet), additionally creates
+  the `vX.Y.Z` git tag, a GitHub Release with auto-generated notes, and the
+  `:vX.Y.Z` image.
+
+So tagging, releasing, and publishing all happen automatically on `dev → main`;
+no manual `git tag` is needed.
+
 ### Data and large files
 
 - `multi_proteome_go.duckdb` (~20 MB) is the bundled GO-annotation database used

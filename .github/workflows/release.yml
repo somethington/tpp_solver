@@ -1,0 +1,98 @@
+name: Release
+
+# Unified release pipeline. Promoting dev -> main (a push to main) will:
+#   1. run lint + tests (gate),
+#   2. always publish the :latest image,
+#   3. if tpp_solver/__init__.py:__version__ is a NEW version (no matching tag yet),
+#      also tag vX.Y.Z, create a GitHub Release, and publish the :vX.Y.Z image.
+# So the only manual step in a release is bumping __version__ on dev.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write   # create tags + releases
+  packages: write   # push images to GHCR
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Lint and test (gate)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          ruff check .
+          pytest
+
+      - name: Read version
+        id: ver
+        run: |
+          VERSION=$(python -c "import tpp_solver; print(tpp_solver.__version__)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: v$VERSION"
+
+      - name: Check whether this version is already released
+        id: check
+        run: |
+          if git rev-parse "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "is_new=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${{ steps.ver.outputs.tag }} already exists — refreshing :latest only."
+          else
+            echo "is_new=true" >> "$GITHUB_OUTPUT"
+            echo "New version ${{ steps.ver.outputs.tag }} — will tag, release and publish."
+          fi
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          REPO=ghcr.io/${{ github.repository_owner }}/tpp_solver
+          TAGS="$REPO:latest"
+          if [ "${{ steps.check.outputs.is_new }}" = "true" ]; then
+            TAGS="$TAGS,$REPO:${{ steps.ver.outputs.tag }}"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Tag and create GitHub Release
+        if: steps.check.outputs.is_new == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --target "${{ github.sha }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --generate-notes
