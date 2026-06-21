@@ -1,0 +1,12 @@
+# maturin build backend for the native extension. Builds an importable
+# module named `tpp_fit` (matches [lib].name in Cargo.toml).
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "tpp-fit"
+requires-python = ">=3.10"
+dynamic = ["version"]   # taken from Cargo.toml
+
+[tool.maturin]

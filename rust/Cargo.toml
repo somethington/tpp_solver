@@ -1,0 +1,20 @@
+# Package config only — no implementation. Adjust crate versions to the latest
+# compatible set when you start; pyo3 and numpy majors must match each other.
+[package]
+name = "tpp_fit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tpp_fit"
+crate-type = ["cdylib"]   # builds a Python extension module
+
+[dependencies]
+pyo3 = { version = "*", features = ["extension-module"] }
+numpy = "*"                # keep major in lockstep with pyo3
+levenberg-marquardt = "*"  # LM solver; use ITS re-exported nalgebra (see README)
+rayon = "*"                # parallel fitting across curves
+
+[profile.release]
+lto = true
+codegen-units = 1

@@ -7,7 +7,7 @@ APP     := tpp_solver_mt.py
 
 .DEFAULT_GOAL := help
 
-.PHONY: help install run test lint format docker-build docker-run \
+.PHONY: help install run test bench lint format rust docker-build docker-run \
         server-compose-build-nocache server-compose-interactive \
         server-compose server-compose-production attach
 
@@ -28,6 +28,9 @@ test: ## Run the test suite
 
 bench: ## Run speed benchmarks (baselines for the planned Rust rewrite)
 	$(PYTHON) -m pytest benchmarks/ --benchmark-only --benchmark-columns=min,mean,max,rounds
+
+rust: ## Build the optional native fit extension (rust/) into the venv (needs maturin)
+	cd rust && maturin develop --release
 
 lint: ## Lint with ruff
 	ruff check .
