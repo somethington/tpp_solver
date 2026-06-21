@@ -6,3 +6,16 @@ test
 tempCodeRunnerFile.py
 .vscode
 .conda
+
+# Python build / tooling artifacts
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Large proteome FASTA inputs for scraper.py (download from UniProt; see fasta/README.md)
+fasta/*.fasta

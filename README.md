@@ -163,3 +163,66 @@ Explanation of the metadata file columns:
 
 - **TSV file**: Intensity data from FragPipe.
 - **CSV file**: Metadata (formatted as described above)
+
+---
+
+## **Development**
+
+Dependencies are declared in `pyproject.toml` (the canonical source; `requirements.txt`
+mirrors the core runtime deps for the Docker build).
+
+Common tasks are available via `make` (run `make help` to list them):
+
+```bash
+make install   # install the app + dev tools (pytest, ruff) in editable mode
+make run       # launch the Streamlit app (override the port with PORT=8502)
+make test      # run the test suite
+make lint      # lint with ruff
+```
+
+Equivalent raw commands:
+
+```bash
+python -m pip install -e ".[dev]"
+streamlit run tpp_solver_mt.py
+ruff check .
+pytest
+```
+
+Optional extras:
+
+- `pip install ".[scraper]"` — installs `biopython`/`requests` needed only to
+  (re)build the GO/proteome database with `scraper.py`.
+
+Continuous integration (`.github/workflows/ci.yml`) runs `ruff` and `pytest`
+against Python 3.10–3.12 on every push and pull request.
+
+### Releasing
+
+Versioning is unified around a single source of truth — `__version__` in
+[`tpp_solver/__init__.py`](tpp_solver/__init__.py) (which `pyproject.toml` reads
+dynamically). Cutting a release is one manual step plus a merge:
+
+1. On `dev`, bump `__version__` to the new version (e.g. `1.2.4`).
+2. Merge `dev → main`.
+
+The push to `main` runs `.github/workflows/release.yml`, which:
+- runs `ruff` + `pytest` as a gate,
+- always rebuilds and publishes the `:latest` image,
+- and, **if `__version__` is new** (no matching tag yet), additionally creates
+  the `vX.Y.Z` git tag, a GitHub Release with auto-generated notes, and the
+  `:vX.Y.Z` image.
+
+So tagging, releasing, and publishing all happen automatically on `dev → main`;
+no manual `git tag` is needed.
+
+### Data and large files
+
+- `multi_proteome_go.duckdb` (~20 MB) is the bundled GO-annotation database used
+  at runtime. It is a generated artifact produced by `scraper.py` from UniProt
+  reference proteomes. It remains tracked in git so the app works out of the box;
+  shrinking the repository history would require migrating it to Git LFS or a
+  release asset (a deliberate, repo-wide change).
+- The proteome FASTA inputs in `fasta/` are **not** tracked (see
+  [`fasta/README.md`](fasta/README.md)); download them from UniProt only if you
+  need to rebuild the database.

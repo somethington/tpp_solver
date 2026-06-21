@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tpp-solver"
+# Single source of truth: tpp_solver/__init__.py:__version__ (read dynamically below).
+dynamic = ["version"]
+description = "Streamlit app for analyzing protein thermal stability via Thermal Proteome Profiling (TPP)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+# Core runtime dependencies for the Streamlit app. Pinned to compatible ranges
+# for reproducible builds; this table is the single source of truth (the legacy
+# requirements.txt mirrors it).
+dependencies = [
+    "streamlit>=1.40,<2",
+    "pandas>=2.2,<3",
+    "numpy>=2.1,<3",
+    "matplotlib>=3.9,<4",
+    "scipy>=1.14,<2",
+    "plotly>=5.24,<6",
+    "duckdb>=1.1,<2",
+]
+
+[project.optional-dependencies]
+# Only needed to (re)build the GO/proteome database with scraper.py.
+scraper = [
+    "biopython>=1.84,<2",
+    "requests>=2.32,<3",
+]
+# Tooling for tests and linting.
+dev = [
+    "pytest>=8,<10",
+    "ruff>=0.6",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "tpp_solver.__version__" }
+
+[tool.setuptools]
+# The app lives in the tpp_solver package; tpp_solver_mt is the Streamlit entry
+# point and scraper is a standalone database-builder script. Listed explicitly so
+# setuptools does not auto-discover data directories (fasta/, assets/).
+packages = ["tpp_solver"]
+py-modules = ["tpp_solver_mt", "scraper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import the top-level modules without installing the project.
+pythonpath = ["."]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+# Pragmatic ruleset: real-bug checks (pyflakes + a subset of pycodestyle) plus
+# flake8-bugbear. Full style/formatting is enforced on the refactored package.
+select = ["E4", "E7", "E9", "F", "B"]
