@@ -26,6 +26,9 @@ run: ## Run the Streamlit app locally (override with PORT=...)
 test: ## Run the test suite
 	$(PYTHON) -m pytest
 
+bench: ## Run speed benchmarks (baselines for the planned Rust rewrite)
+	$(PYTHON) -m pytest benchmarks/ --benchmark-only --benchmark-columns=min,mean,max,rounds
+
 lint: ## Lint with ruff
 	ruff check .
 
